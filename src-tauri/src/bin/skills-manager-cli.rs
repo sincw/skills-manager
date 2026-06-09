@@ -184,6 +184,13 @@ struct PresetArgs {
 enum PresetCommand {
     List,
     Current,
+    Create {
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        icon: Option<String>,
+    },
     Preview {
         reference: String,
     },
@@ -278,6 +285,8 @@ struct PresetInfo {
     sort_order: i32,
     skill_count: usize,
     active: bool,
+    created_at: i64,
+    updated_at: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1549,6 +1558,14 @@ fn run_presets(args: PresetArgs, store: &SkillStore, json: bool) -> anyhow::Resu
     match args.command {
         PresetCommand::List => print_json(&list_presets(store)?, json),
         PresetCommand::Current => print_json(&current_preset(store)?, json),
+        PresetCommand::Create {
+            name,
+            description,
+            icon,
+        } => {
+            let preset = create_preset(store, name, description, icon)?;
+            print_json(&preset, json);
+        }
         PresetCommand::Preview { reference } => {
             let preset = resolve_scenario(store, &reference)?;
             let preview = scenario_service::preview_scenario_sync(store, &preset.id)
@@ -1676,6 +1693,8 @@ fn list_presets(store: &SkillStore) -> anyhow::Result<Vec<PresetInfo>> {
             description: scenario.description,
             icon: scenario.icon,
             sort_order: scenario.sort_order,
+            created_at: scenario.created_at,
+            updated_at: scenario.updated_at,
         })
         .collect())
 }
@@ -1683,6 +1702,47 @@ fn list_presets(store: &SkillStore) -> anyhow::Result<Vec<PresetInfo>> {
 fn current_preset(store: &SkillStore) -> anyhow::Result<Option<PresetInfo>> {
     let scenarios = list_presets(store)?;
     Ok(scenarios.into_iter().find(|s| s.active))
+}
+
+fn create_preset(
+    store: &SkillStore,
+    name: String,
+    description: Option<String>,
+    icon: Option<String>,
+) -> anyhow::Result<PresetInfo> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let id = uuid::Uuid::new_v4().to_string();
+    let previous_active_id = store.get_active_scenario_id()?;
+    let record = app_lib::core::skill_store::ScenarioRecord {
+        id: id.clone(),
+        name,
+        description,
+        icon,
+        sort_order: 999,
+        created_at: now,
+        updated_at: now,
+    };
+
+    sync_metadata::with_repo_lock("create scenario", || {
+        store.insert_scenario(&record)?;
+        sync_metadata::write_all_from_db_unlocked(store)
+    })?;
+    if let Some(previous_id) = previous_active_id.as_deref() {
+        scenario_service::unsync_scenario_skills(store, previous_id).map_err(map_app_err)?;
+    }
+    store.set_active_scenario(&id)?;
+
+    Ok(PresetInfo {
+        id,
+        name: record.name,
+        description: record.description,
+        icon: record.icon,
+        sort_order: record.sort_order,
+        skill_count: 0,
+        active: true,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    })
 }
 
 fn count_synced_targets_for_preset(store: &SkillStore, preset_id: &str) -> anyhow::Result<usize> {

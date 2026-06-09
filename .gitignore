@@ -37,3 +37,6 @@ reference
 CLAUDE.md
 .loop-log
 
+# Keep the nested web companion docs tracked.
+!web/docs/
+!web/docs/**

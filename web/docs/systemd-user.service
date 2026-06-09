@@ -1,0 +1,14 @@
+[Unit]
+Description=Skills Manager Web companion
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/src/skills-manager-web
+EnvironmentFile=%h/.config/skills-manager-web/env
+ExecStart=/usr/bin/npm run start --workspace server
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

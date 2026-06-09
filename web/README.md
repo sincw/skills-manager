@@ -1,27 +1,126 @@
 # Skills Manager Web Companion
 
-Linux-only Web console for `xingkongliang/skills-manager`. The service keeps the upstream desktop app untouched and talks to `skills-manager-cli --json` through a whitelist API.
+[中文说明](./README.zh-CN.md)
 
-## Requirements
+Linux-only browser UI for `xingkongliang/skills-manager`. The Web companion runs a local Fastify API server plus a React client. The server talks to `skills-manager-cli --json`; the browser never runs the CLI directly.
 
-- Linux
-- Node.js 20+
-- A built or installed `skills-manager-cli`
+The project now lives under the main Skills Manager repository:
 
-Install the upstream CLI first:
+```text
+skills-manager/
+  web/
+```
+
+## What Must Be Installed First
+
+- Linux.
+- Node.js 20+.
+- Rust toolchain with `cargo`, required when building or installing `skills-manager-cli` from source.
+- A working `skills-manager-cli` binary. This is the required backend for the Web UI.
+- Git, optional but needed for Git-backed skills, Git Backup, pull, push, and installing skills from Git URLs.
+
+You do not need to run the desktop app before using the Web UI. The Web UI and the desktop app both use the local Skills Manager data through the CLI.
+
+## Required Plugins
+
+No extra browser extension, Skills Manager plugin, or Tauri plugin needs to be installed manually.
+
+The client imports some Tauri plugin APIs because it reuses upstream desktop React views, but the Web build maps those imports to browser shims in `client/src/lib/browser-shims.ts`. The npm packages used for development are installed by `npm install`.
+
+## Install Order
+
+### 1. Install the CLI from the parent project
+
+From the repository root:
 
 ```bash
-cd ../skills-manager
+cd /path/to/skills-manager
 npm install
 npm run cli:install
 ```
 
-## Development
+This installs the binary at:
+
+```text
+~/.cargo/bin/skills-manager-cli
+```
+
+Check it:
 
 ```bash
-cd skills-manager-web
+~/.cargo/bin/skills-manager-cli --help
+```
+
+If `skills-manager-cli` is already on `PATH`, you can skip reinstalling it.
+
+### 2. Install Web dependencies
+
+From the Web project:
+
+```bash
+cd /path/to/skills-manager/web
 npm install
+```
+
+Use `npm ci` instead of `npm install` when you want a clean, lockfile-exact install.
+
+### 3. Configure the server environment
+
+For local use, exporting only the CLI path is usually enough:
+
+```bash
+export SKILLS_MANAGER_CLI="$HOME/.cargo/bin/skills-manager-cli"
+```
+
+You can also copy the template and source it in your shell:
+
+```bash
+cd /path/to/skills-manager/web
+cp .env.example .env
+set -a
+source .env
+set +a
+```
+
+The server reads environment variables from the process environment. The `.env` file is a template unless your shell, service manager, or another tool loads it.
+
+## Run the Web UI in Development
+
+Run the API server in one terminal:
+
+```bash
+cd /path/to/skills-manager/web
 SKILLS_MANAGER_CLI="$HOME/.cargo/bin/skills-manager-cli" npm run dev
+```
+
+Run the Vite client in a second terminal:
+
+```bash
+cd /path/to/skills-manager/web
+npm run dev:client
+```
+
+Open:
+
+```text
+http://127.0.0.1:1420
+```
+
+The Vite client proxies `/api` to the API server at `http://127.0.0.1:17321`. Keep both terminals running while developing. If the API server is stopped, the page can load but data and write actions will fail.
+
+## Run a Built Web UI
+
+Build both the server and client:
+
+```bash
+cd /path/to/skills-manager/web
+npm run build
+```
+
+Start the built server:
+
+```bash
+SKILLS_MANAGER_CLI="$HOME/.cargo/bin/skills-manager-cli" npm run start --workspace server
 ```
 
 Open:
@@ -30,59 +129,53 @@ Open:
 http://127.0.0.1:17321
 ```
 
-The server defaults to `127.0.0.1:17321`. In development it serves API routes and the built client when `client/dist` exists. To run a separate Vite client while editing:
+The server serves `client/dist` when the client has been built.
 
-```bash
-npm run dev:client
-```
+## Environment Variables
 
-Then open `http://127.0.0.1:1420`; Vite proxies `/api` to `http://127.0.0.1:17321`.
+| Variable | Required | Description |
+| --- | --- | --- |
+| `SKILLS_MANAGER_CLI` | Recommended | CLI executable path. Defaults to `skills-manager-cli` in `PATH`. |
+| `SKILLS_MANAGER_WEB_HOST` | No | Server host. Defaults to `127.0.0.1`. |
+| `SKILLS_MANAGER_WEB_PORT` | No | Server port. Defaults to `17321`. |
+| `SKILLS_MANAGER_WEB_TOKEN` | Conditional | Required when `SKILLS_MANAGER_WEB_HOST=0.0.0.0`. |
+| `SKILLS_MANAGER_SKILLS_ROOT` | No | Optional path passed to the CLI as `--skills-root <path>`. |
+| `SKILLS_MANAGER_WEB_DATA_DIR` | No | Stores `audit.jsonl` and `commands.jsonl`. Defaults to `~/.local/share/skills-manager-web`. |
 
-## Environment
+For normal browser use, keep the server on `127.0.0.1`. If you bind to `0.0.0.0`, the backend requires `SKILLS_MANAGER_WEB_TOKEN`. The current browser client does not provide a token-entry screen, so remote exposure should be handled with an authenticated reverse proxy or another layer that sends `Authorization: Bearer <token>` to `/api`.
 
-Copy `.env.example` or export variables:
+## Pages and Routes
 
-```bash
-export SKILLS_MANAGER_CLI="$HOME/.cargo/bin/skills-manager-cli"
-export SKILLS_MANAGER_WEB_HOST=127.0.0.1
-export SKILLS_MANAGER_WEB_PORT=17321
-```
+Core Skills Manager routes:
 
-Important variables:
+- `/` - desktop-style dashboard.
+- `/install` - Marketplace and skill installation.
+- `/my-skills` - installed skills.
+- `/global-workspace` - global agent workspace overview.
+- `/global-workspace/:agentKey` - one agent workspace.
+- `/project/:id` - project workspace detail.
+- `/settings` - desktop-style settings.
 
-- `SKILLS_MANAGER_CLI`: CLI executable path. Defaults to `skills-manager-cli` in `PATH`.
-- `SKILLS_MANAGER_WEB_HOST`: defaults to `127.0.0.1`.
-- `SKILLS_MANAGER_WEB_PORT`: defaults to `17321`.
-- `SKILLS_MANAGER_WEB_TOKEN`: required if binding to `0.0.0.0`.
-- `SKILLS_MANAGER_SKILLS_ROOT`: optional path passed to CLI as `--skills-root <path>`.
-- `SKILLS_MANAGER_WEB_DATA_DIR`: stores `audit.jsonl` and `commands.jsonl`.
+Web console routes:
 
-## Build and Run
-
-```bash
-npm run build
-SKILLS_MANAGER_CLI="$HOME/.cargo/bin/skills-manager-cli" npm run start --workspace server
-```
-
-## Web Usage
-
-- Dashboard: repository paths, counts, active preset, recent jobs.
-- Skills: list/search, Markdown details, install local/Git/skills.sh, skills.sh search, check/update single and all, export, tags, adopt dry-run/execute, adopt-git, legacy enable/disable, dry-run guarded delete.
-- Presets: list/current, preview, apply, deactivate, add/remove skills, sync dry-run/execute with optional tool filter.
-- Tools: read-only CLI tool state.
-- Git Backup: status, init, clone, set remote, pull, push, commit, versions, restore.
-- Operations: job queue, command argv, stdout/stderr, errors, durations.
-- Settings: theme and central repository path controls.
+- `/web` - repository paths, counts, active preset, recent jobs.
+- `/web/skills` - list, search, install, update, check, export, tag, adopt, and delete skills.
+- `/web/presets` - list, preview, apply, deactivate, add/remove skills, and sync presets.
+- `/web/tools` - read-only tool state.
+- `/web/git` - status, init, clone, remote, pull, push, commit, versions, and restore.
+- `/web/operations` - job queue, command argv, stdout/stderr, errors, and durations.
+- `/web/settings` - theme, language, and central repository path controls.
 
 High-risk writes require frontend confirmation and backend `confirm: true`. Skill deletion must run `remove-dry-run` before the delete endpoint accepts it.
 
 ## Tests
 
 ```bash
+npm run lint
 npm run test
 ```
 
-This runs server unit/API tests and the client production build.
+`npm run test` runs server unit/API tests and the client production build.
 
 ## systemd User Service
 
@@ -96,14 +189,14 @@ systemctl --user daemon-reload
 systemctl --user enable --now skills-manager-web
 ```
 
-Edit `WorkingDirectory` in the unit if your checkout is not at `~/src/skills-manager-web`.
+Edit `WorkingDirectory` in the unit if your checkout is not at `~/src/skills-manager/web`.
 
 ## Upstream UI Sync
 
-The copied upstream React/Tailwind/i18n assets are kept in `client/src` and `client/public`. To refresh from a sibling upstream checkout:
+The copied upstream React/Tailwind/i18n assets are kept in `client/src` and `client/public`. To refresh from the parent upstream checkout:
 
 ```bash
-scripts/sync-upstream-ui.sh ../skills-manager
+scripts/sync-upstream-ui.sh ..
 npm run build --workspace client
 ```
 

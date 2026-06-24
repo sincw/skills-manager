@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { X, FolderOpen, Search, Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { cn } from "../utils";
 import * as api from "../lib/tauri";
+import { DirectoryPickerDialog } from "./DirectoryPickerDialog";
 
 interface Props {
   open: boolean;
@@ -14,8 +14,10 @@ interface Props {
 export function AddProjectDialog({ open, onClose, onAdded }: Props) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<"manual" | "scan" | "linked">("manual");
+  const [pickerMode, setPickerMode] = useState<"manual" | "scan" | "linked" | null>(null);
   const [scanRoot, setScanRoot] = useState("");
   const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
   const [scanResults, setScanResults] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
@@ -29,6 +31,7 @@ export function AddProjectDialog({ open, onClose, onAdded }: Props) {
     setTab("manual");
     setScanRoot("");
     setScanning(false);
+    setScanError(null);
     setScanResults([]);
     setSelected(new Set());
     setAdding(false);
@@ -36,23 +39,13 @@ export function AddProjectDialog({ open, onClose, onAdded }: Props) {
     setLinkedName("");
     setLinkedPath("");
     setManualPath("");
+    setPickerMode(null);
   }, [open]);
 
   if (!open) return null;
 
   const handleSelectFolder = async () => {
-    const dir = await dialogOpen({ directory: true, multiple: false });
-    if (!dir) return;
-    setAdding(true);
-    try {
-      await api.addProject(dir as string);
-      await onAdded();
-      onClose();
-    } catch {
-      // error handled by toast in parent
-    } finally {
-      setAdding(false);
-    }
+    setPickerMode("manual");
   };
 
   const handleAddManualPath = async () => {
@@ -73,6 +66,7 @@ export function AddProjectDialog({ open, onClose, onAdded }: Props) {
     if (!scanRoot.trim()) return;
     setScanning(true);
     setScanned(false);
+    setScanError(null);
     setScanResults([]);
     setSelected(new Set());
     try {
@@ -80,6 +74,8 @@ export function AddProjectDialog({ open, onClose, onAdded }: Props) {
       setScanResults(results);
       setSelected(new Set(results));
       setScanned(true);
+    } catch (error) {
+      setScanError(error instanceof Error ? error.message : t("project.scanFailed"));
     } finally {
       setScanning(false);
     }
@@ -113,9 +109,44 @@ export function AddProjectDialog({ open, onClose, onAdded }: Props) {
   };
 
   const handleSelectBrowse = async () => {
-    const dir = await dialogOpen({ directory: true, multiple: false });
-    if (dir) setScanRoot(dir as string);
+    setPickerMode("scan");
   };
+
+  const handleDirectorySelected = async (path: string) => {
+    if (pickerMode === "scan") {
+      setScanRoot(path);
+      setScanError(null);
+      return;
+    }
+    if (pickerMode === "linked") {
+      setLinkedPath(path);
+      return;
+    }
+    setAdding(true);
+    try {
+      await api.addProject(path);
+      await onAdded();
+      onClose();
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const pickerInitialPath =
+    pickerMode === "manual"
+      ? manualPath
+      : pickerMode === "scan"
+        ? scanRoot
+        : pickerMode === "linked"
+          ? linkedPath
+          : "";
+
+  const pickerTitle =
+    pickerMode === "manual"
+      ? t("project.addManual")
+      : pickerMode === "scan"
+        ? t("project.scanDir")
+        : t("project.selectSkillsDir");
 
   const handleAddLinkedWorkspace = async () => {
     if (!linkedName.trim() || !linkedPath.trim()) return;
@@ -237,6 +268,12 @@ export function AddProjectDialog({ open, onClose, onAdded }: Props) {
               </button>
             </div>
 
+            {scanError && (
+              <p className="text-[12px] text-red-500">
+                {scanError}
+              </p>
+            )}
+
             {scanned && scanResults.length === 0 && (
               <p className="text-[13px] text-muted py-4 text-center">
                 {t("project.scanNoResult")}
@@ -325,10 +362,7 @@ export function AddProjectDialog({ open, onClose, onAdded }: Props) {
                 className={cn(inputClass, "flex-1")}
               />
               <button
-                onClick={async () => {
-                  const dir = await dialogOpen({ directory: true, multiple: false });
-                  if (dir) setLinkedPath(dir as string);
-                }}
+                onClick={() => setPickerMode("linked")}
                 className="px-2.5 rounded-[4px] border border-border-subtle bg-background text-muted hover:text-secondary hover:border-border transition-all outline-none"
                 title={t("project.selectSkillsDir")}
               >
@@ -349,6 +383,13 @@ export function AddProjectDialog({ open, onClose, onAdded }: Props) {
           </div>
         )}
       </div>
+      <DirectoryPickerDialog
+        open={pickerMode !== null}
+        title={pickerTitle}
+        initialPath={pickerInitialPath}
+        onClose={() => setPickerMode(null)}
+        onSelect={handleDirectorySelected}
+      />
     </div>
   );
 }

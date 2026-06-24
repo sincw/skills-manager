@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { JsonValue, ServerConfig } from "./types.js";
@@ -137,6 +138,15 @@ interface ProjectExportReport {
   targets: Array<{
     agent: string;
     target_path: string;
+  }>;
+}
+
+interface DirectoryListing {
+  path: string;
+  parent: string | null;
+  entries: Array<{
+    name: string;
+    path: string;
   }>;
 }
 
@@ -612,6 +622,88 @@ async function directoryExists(dir: string): Promise<boolean> {
   return info?.isDirectory() ?? false;
 }
 
+async function browseDirectory(dir: string): Promise<DirectoryListing> {
+  const current = path.resolve(dir);
+  const info = await stat(current);
+  if (!info.isDirectory()) {
+    throw new Error("path must be a directory");
+  }
+
+  const entries = await readdir(current, { withFileTypes: true });
+  const directories = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => ({
+      name: entry.name,
+      path: path.join(current, entry.name),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const parent = path.dirname(current);
+  return {
+    path: current,
+    parent: parent === current ? null : parent,
+    entries: directories,
+  };
+}
+
+function projectScanPaths(tools: CliToolInfo[]): string[] {
+  return [
+    ...new Set(
+      tools
+        .filter((tool) => tool.installed && tool.enabled && tool.project_relative_skills_dir)
+        .map((tool) => tool.project_relative_skills_dir as string),
+    ),
+  ];
+}
+
+async function hasAnyProjectSkillsDir(dir: string, relativeSkillPaths: string[]): Promise<boolean> {
+  for (const relativePath of relativeSkillPaths) {
+    if (await directoryExists(path.join(dir, relativePath))) return true;
+  }
+  return false;
+}
+
+async function scanProjectDirectories(
+  root: string,
+  relativeSkillPaths: string[],
+  maxDepth = 3,
+): Promise<string[]> {
+  if (relativeSkillPaths.length === 0) return [];
+
+  const results: string[] = [];
+  const rootPath = path.resolve(root);
+  const rootInfo = await stat(rootPath);
+  if (!rootInfo.isDirectory()) {
+    throw new Error("root must be a directory");
+  }
+
+  async function walk(dir: string, depth: number): Promise<void> {
+    if (depth > maxDepth) return;
+    if (await hasAnyProjectSkillsDir(dir, relativeSkillPaths)) {
+      results.push(dir);
+      return;
+    }
+    if (depth === maxDepth) return;
+
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (
+        entry.name.startsWith(".") ||
+        entry.name === "node_modules" ||
+        entry.name === "target" ||
+        entry.name === "__pycache__"
+      ) {
+        continue;
+      }
+      await walk(path.join(dir, entry.name), depth + 1);
+    }
+  }
+
+  await walk(rootPath, 0);
+  return results.sort();
+}
+
 function slugifySkillDirName(name: string): string {
   let out = "";
   let previousDash = false;
@@ -891,6 +983,22 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
   });
   app.get("/api/operations/commands", async () => ({ ok: true, data: operations.listCommands() }));
 
+  app.get<{ Querystring: { path?: string } }>("/api/fs/directories", async (request, reply) => {
+    try {
+      const requestedPath =
+        typeof request.query.path === "string" && request.query.path.trim() !== ""
+          ? expandLinuxPath(request.query.path)
+          : homedir();
+      return { ok: true, data: await browseDirectory(requestedPath) };
+    } catch (error) {
+      reply.code(400);
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "failed to browse directory",
+      };
+    }
+  });
+
   app.get("/api/repo/status", (request, reply) => directCli(request, reply, ctx, ["repo", "status"]));
   app.post("/api/repo/path", (request, reply) => {
     const body = asRecord(request.body);
@@ -1148,6 +1256,20 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
       reply.send({ ok: true, data: document });
     },
   );
+
+  app.get<{ Querystring: { root?: string } }>("/api/projects/scan", async (request, reply) => {
+    try {
+      const root = expandLinuxPath(nonEmptyString(request.query.root, "root"));
+      const tools = await readTools(request, ctx);
+      return { ok: true, data: await scanProjectDirectories(root, projectScanPaths(tools)) };
+    } catch (error) {
+      reply.code(400);
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "failed to scan projects",
+      };
+    }
+  });
 
   app.get("/api/projects", async () => ({ ok: true, data: await readProjectRegistry(config) }));
   app.post("/api/projects", async (request) => {

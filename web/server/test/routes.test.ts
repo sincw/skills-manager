@@ -289,6 +289,58 @@ describe("routes", () => {
     ]);
   });
 
+  it("browses local directories for browser-based path selection", async () => {
+    const config = makeConfig();
+    const root = path.join(config.dataDir, "browse-root");
+    const alpha = path.join(root, "alpha");
+    const beta = path.join(root, "beta");
+    mkdirSync(alpha, { recursive: true });
+    mkdirSync(beta, { recursive: true });
+    writeFileSync(path.join(root, "note.txt"), "not a directory");
+
+    const app = await createServer(config);
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/fs/directories?path=${encodeURIComponent(root)}`,
+    });
+    const rejected = await app.inject({
+      method: "GET",
+      url: "/api/fs/directories?path=relative",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual({
+      path: root,
+      parent: config.dataDir,
+      entries: [
+        { name: "alpha", path: alpha },
+        { name: "beta", path: beta },
+      ],
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().error).toContain("absolute Linux path");
+  });
+
+  it("scans a root directory for project workspaces with agent skills directories", async () => {
+    const config = makeConfig();
+    const root = path.join(config.dataDir, "scan-root");
+    const project = path.join(root, "project-one");
+    const ignored = path.join(root, "not-a-project");
+    mkdirSync(path.join(project, ".codex", "skills"), { recursive: true });
+    mkdirSync(ignored, { recursive: true });
+
+    const app = await createServer(config);
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/projects/scan?root=${encodeURIComponent(root)}`,
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual([project]);
+  });
+
   it("fetches skills.sh leaderboard pages instead of using CLI search wildcard", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(

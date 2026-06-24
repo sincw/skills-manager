@@ -158,6 +158,15 @@ export interface ProjectAgentTarget {
   is_custom: boolean;
 }
 
+export interface DirectoryListing {
+  path: string;
+  parent: string | null;
+  entries: Array<{
+    name: string;
+    path: string;
+  }>;
+}
+
 export interface ProjectSkill {
   name: string;
   dir_name: string;
@@ -937,10 +946,14 @@ export const addProject = (path: string) => post<Project>("/api/projects", { pat
 export const addLinkedWorkspace = (name: string, path: string) =>
   post<Project>("/api/projects/linked", { name, path });
 export const removeProject = (id: string) => del<boolean>(`/api/projects/${encodeRef(id)}`);
-export const scanProjects = async (rootPath: string): Promise<string[]> => {
-  ignoreArgs(rootPath);
-  return [];
+export const browseDirectories = (path?: string) => {
+  const params = path?.trim()
+    ? `?path=${encodeURIComponent(path.trim())}`
+    : "";
+  return get<DirectoryListing>(`/api/fs/directories${params}`);
 };
+export const scanProjects = async (rootPath: string): Promise<string[]> =>
+  get<string[]>(`/api/projects/scan?root=${encodeURIComponent(rootPath)}`);
 export const getProjectAgentTargets = async (projectId: string): Promise<ProjectAgentTarget[]> => {
   const tools = await get<ToolInfo[]>(`/api/projects/${encodeRef(projectId)}/agent-targets`);
   return tools.map(toProjectAgentTarget);

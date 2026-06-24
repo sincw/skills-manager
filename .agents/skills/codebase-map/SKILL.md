@@ -95,12 +95,19 @@ Use architecture facts only when they improve navigation. Fit them into the exis
 
 Do not write architecture review, desired redesign, exhaustive component inventory, or guide-style procedures. The map should tell an agent where to go and which boundary to respect, not teach every step of a workflow.
 
+## Domain Navigation
+
+Include domain knowledge only when it routes future agents through the codebase. A domain entry should connect the business concept to its owning module, entry point, stable flow, public seam, adapter, or focused test. Do not define the concept in the map; use `CONTEXT.md` for domain language and `docs/adr/` for durable decisions.
+
+Good domain navigation looks like: "`Billing`: enters through webhook handlers and checkout commands; lifecycle rules are owned by `BillingService`; test through billing service integration tests." Bad domain navigation explains what billing means, repeats product policy, or records one task's discovery.
+
 ## Map Content
 
 Write stable navigation facts that help future agents navigate the repository:
 
 - where important flows enter the codebase
 - durable app, CLI, worker, route, package, or service entry points
+- domain concepts only when they route to code ownership, entry points, seams, adapters, or focused tests
 - module responsibilities
 - ownership boundaries, invariants, and flow handoffs that affect navigation
 - public interfaces, seams, and adapters future agents should use
@@ -110,6 +117,7 @@ Write stable navigation facts that help future agents navigate the repository:
 Exclude:
 
 - domain glossary entries; use `CONTEXT.md`
+- business rules or product policy that do not change where agents should navigate
 - ADR-level decisions; use `docs/adr/`
 - temporary plans, line numbers, fragile internals, speculative architecture
 - temporary investigation notes, confidence commentary, or unresolved questions
@@ -127,6 +135,7 @@ Change `codebase-map.md` only when durable navigation facts changed:
 
 - major entry points changed
 - stable flows changed
+- domain-to-code ownership or routing changed
 - module responsibilities changed
 - ownership boundaries, flow handoffs, or stable invariants changed
 - public interfaces, seams, or adapters changed

@@ -1,9 +1,11 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use unicode_normalization::UnicodeNormalization;
 use walkdir::WalkDir;
 
@@ -14,6 +16,7 @@ use super::skill_store::{ScenarioRecord, SkillRecord, SkillStore};
 
 const SCHEMA_VERSION: u32 = 1;
 const APP_MIN_VERSION: &str = "2.0.0";
+const SNAPSHOT_FINGERPRINT_SETTING: &str = "sync_metadata_snapshot_fingerprint";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SchemaFile {
@@ -106,13 +109,44 @@ pub(crate) fn write_all_from_db_unlocked(store: &SkillStore) -> Result<()> {
     write_skill_records_from_db(store)?;
     write_scenario_records_from_db(store)?;
     remove_stale_metadata_files(store)?;
+    remember_current_sync_snapshot(store)?;
     Ok(())
 }
 
 #[allow(dead_code)]
 pub fn reindex_from_metadata(store: &SkillStore) -> Result<()> {
     let _lock = RepoLock::acquire("reindex sync metadata")?;
-    reindex_from_metadata_unlocked(store)
+    reindex_from_metadata_unlocked(store)?;
+    remember_current_sync_snapshot(store)?;
+    Ok(())
+}
+
+pub fn reindex_from_metadata_if_changed(store: &SkillStore) -> Result<bool> {
+    if !metadata_exists() {
+        return Ok(false);
+    }
+
+    let current = match sync_snapshot_fingerprint()? {
+        Some(value) => value,
+        None => return Ok(false),
+    };
+    if store.get_setting(SNAPSHOT_FINGERPRINT_SETTING)?.as_deref() == Some(current.as_str()) {
+        return Ok(false);
+    }
+
+    let _lock = RepoLock::acquire("reindex sync metadata")?;
+    let locked_current = match sync_snapshot_fingerprint()? {
+        Some(value) => value,
+        None => return Ok(false),
+    };
+    if store.get_setting(SNAPSHOT_FINGERPRINT_SETTING)?.as_deref() == Some(locked_current.as_str())
+    {
+        return Ok(false);
+    }
+
+    reindex_from_metadata_unlocked(store)?;
+    store.set_setting(SNAPSHOT_FINGERPRINT_SETTING, &locked_current)?;
+    Ok(true)
 }
 
 pub(crate) fn reindex_from_metadata_unlocked(store: &SkillStore) -> Result<()> {
@@ -214,6 +248,112 @@ pub(crate) fn reindex_from_metadata_unlocked(store: &SkillStore) -> Result<()> {
         store.replace_scenario_memberships_from_metadata(&memberships)?;
     }
     Ok(())
+}
+
+fn remember_current_sync_snapshot(store: &SkillStore) -> Result<()> {
+    if let Some(fingerprint) = sync_snapshot_fingerprint()? {
+        store.set_setting(SNAPSHOT_FINGERPRINT_SETTING, &fingerprint)?;
+    }
+    Ok(())
+}
+
+fn sync_snapshot_fingerprint() -> Result<Option<String>> {
+    if !metadata_exists() {
+        return Ok(None);
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"sync-metadata-snapshot-v1");
+    hash_metadata_json_files(&mut hasher)?;
+    hash_registered_skill_file_state(&mut hasher)?;
+    Ok(Some(hex::encode(hasher.finalize())))
+}
+
+fn hash_metadata_json_files(hasher: &mut Sha256) -> Result<()> {
+    let root = metadata_dir();
+    if !root.exists() {
+        return Ok(());
+    }
+
+    let mut files = Vec::new();
+    for entry in WalkDir::new(&root) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if !entry.path().extension().is_some_and(|ext| ext == "json") {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(&root)
+            .unwrap_or(entry.path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        files.push((relative, entry.into_path()));
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (relative, path) in files {
+        let bytes = fs::read(path)?;
+        hash_str(hasher, "metadata-json", &relative);
+        hash_bytes(hasher, &bytes);
+    }
+
+    Ok(())
+}
+
+fn hash_registered_skill_file_state(hasher: &mut Sha256) -> Result<()> {
+    if !has_complete_skill_snapshot() {
+        return Ok(());
+    }
+
+    let mut skills = read_skill_files()?;
+    skills.sort_by(|a, b| {
+        a.path_key
+            .cmp(&b.path_key)
+            .then_with(|| a.skill_id.cmp(&b.skill_id))
+    });
+
+    let skills_root = central_repo::skills_dir();
+    for skill in skills {
+        hash_str(hasher, "skill-dir", &skill.path);
+        let dir = skills_root.join(&skill.path);
+        if !dir.is_dir() {
+            hasher.update(b"missing");
+            continue;
+        }
+
+        for entry in super::content_hash::list_content_files(&dir) {
+            hash_str(hasher, "skill-file", &entry.relative_path);
+            match fs::metadata(&entry.path) {
+                Ok(metadata) => {
+                    hasher.update(metadata.len().to_le_bytes());
+                    let modified = metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                        .map(|duration| duration.as_nanos())
+                        .unwrap_or(0);
+                    hasher.update(modified.to_le_bytes());
+                    hasher.update(entry.exec_bits.unwrap_or(0).to_le_bytes());
+                }
+                Err(_) => hasher.update(b"missing"),
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn hash_str(hasher: &mut Sha256, label: &str, value: &str) {
+    hasher.update(label.as_bytes());
+    hash_bytes(hasher, value.as_bytes());
+}
+
+fn hash_bytes(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
 }
 
 #[allow(dead_code)]
@@ -629,7 +769,7 @@ mod tests {
     use super::*;
     use crate::core::{central_repo, skill_store::SkillStore};
     use std::sync::MutexGuard;
-    use tempfile::{TempDir, tempdir};
+    use tempfile::{tempdir, TempDir};
 
     struct TestRepo {
         _lock: MutexGuard<'static, ()>,

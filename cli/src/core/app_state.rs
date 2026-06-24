@@ -78,9 +78,11 @@ fn initialize_store_inner(
 
     if sync_metadata::metadata_exists() {
         let step = Instant::now();
-        sync_metadata::reindex_from_metadata(&store)
+        let reindexed = sync_metadata::reindex_from_metadata_if_changed(&store)
             .context("Failed to reindex from sync metadata")?;
-        timings.reindex_from_metadata_ms = Some(step.elapsed().as_millis());
+        if reindexed {
+            timings.reindex_from_metadata_ms = Some(step.elapsed().as_millis());
+        }
     }
 
     let step = Instant::now();
@@ -153,5 +155,151 @@ impl StartupTimings {
             self.apply_scenario_ms,
             self.skill_count
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{
+        central_repo,
+        sync_metadata::{self, SchemaFile, SkillMetaFile, SourceMeta},
+    };
+    use std::{fs, path::PathBuf, sync::MutexGuard};
+    use tempfile::{tempdir, TempDir};
+
+    struct TestRepo {
+        _lock: MutexGuard<'static, ()>,
+        _tmp: TempDir,
+    }
+
+    impl Drop for TestRepo {
+        fn drop(&mut self) {
+            central_repo::set_test_base_dir_override(None);
+        }
+    }
+
+    fn test_repo() -> TestRepo {
+        let lock = central_repo::test_base_dir_lock();
+        let tmp = tempdir().unwrap();
+        let base = tmp.path().join("repo");
+        central_repo::set_test_base_dir_override(Some(base));
+        fs::create_dir_all(central_repo::skills_dir()).unwrap();
+        TestRepo {
+            _lock: lock,
+            _tmp: tmp,
+        }
+    }
+
+    fn write_json<T: serde::Serialize>(path: PathBuf, value: &T) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let mut bytes = serde_json::to_vec_pretty(value).unwrap();
+        bytes.push(b'\n');
+        fs::write(path, bytes).unwrap();
+    }
+
+    fn write_skill_dir(name: &str, skill_name: &str) {
+        let dir = central_repo::skills_dir().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {skill_name}\n---\n"),
+        )
+        .unwrap();
+    }
+
+    fn write_metadata_skill(id: &str, path: &str, tags: &[&str]) {
+        write_json(
+            sync_metadata::metadata_dir().join("schema.json"),
+            &SchemaFile {
+                schema_version: 1,
+                app_min_version: "2.0.0".to_string(),
+                created_by: "test".to_string(),
+            },
+        );
+        write_json(
+            sync_metadata::metadata_dir()
+                .join("skills")
+                .join(format!("{id}.json")),
+            &SkillMetaFile {
+                schema_version: 1,
+                skill_id: id.to_string(),
+                path: path.to_string(),
+                path_key: path.to_string(),
+                enabled: true,
+                tags: tags.iter().map(|tag| tag.to_string()).collect(),
+                source: SourceMeta {
+                    source_type: "import".to_string(),
+                    ref_: None,
+                    subpath: None,
+                    branch: None,
+                },
+            },
+        );
+    }
+
+    #[test]
+    fn initialize_cli_store_skips_metadata_reindex_when_snapshot_unchanged() {
+        let _repo = test_repo();
+        write_skill_dir("alpha", "Alpha");
+        write_metadata_skill("skill-1", "alpha", &[]);
+
+        let (first_store, first_timings) = initialize_store_inner(false).unwrap();
+        assert!(first_timings.reindex_from_metadata_ms.is_some());
+        assert!(first_store.get_skill_by_id("skill-1").unwrap().is_some());
+        drop(first_store);
+
+        let (_second_store, second_timings) = initialize_store_inner(false).unwrap();
+        assert!(
+            second_timings.reindex_from_metadata_ms.is_none(),
+            "unchanged sync metadata should not rebuild the DB on every CLI startup"
+        );
+    }
+
+    #[test]
+    fn initialize_cli_store_reindexes_when_metadata_changes() {
+        let _repo = test_repo();
+        write_skill_dir("alpha", "Alpha");
+        write_metadata_skill("skill-1", "alpha", &[]);
+
+        let (first_store, first_timings) = initialize_store_inner(false).unwrap();
+        assert!(first_timings.reindex_from_metadata_ms.is_some());
+        drop(first_store);
+
+        write_metadata_skill("skill-1", "alpha", &["changed"]);
+
+        let (second_store, second_timings) = initialize_store_inner(false).unwrap();
+        assert!(second_timings.reindex_from_metadata_ms.is_some());
+        assert_eq!(
+            second_store
+                .get_tags_map()
+                .unwrap()
+                .remove("skill-1")
+                .unwrap(),
+            vec!["changed".to_string()]
+        );
+    }
+
+    #[test]
+    fn initialize_cli_store_reindexes_when_registered_skill_content_changes() {
+        let _repo = test_repo();
+        write_skill_dir("alpha", "Alpha");
+        write_metadata_skill("skill-1", "alpha", &[]);
+
+        let (first_store, first_timings) = initialize_store_inner(false).unwrap();
+        assert!(first_timings.reindex_from_metadata_ms.is_some());
+        drop(first_store);
+
+        write_skill_dir("alpha", "Beta Changed");
+
+        let (second_store, second_timings) = initialize_store_inner(false).unwrap();
+        assert!(second_timings.reindex_from_metadata_ms.is_some());
+        let skill = second_store
+            .get_skill_by_id("skill-1")
+            .unwrap()
+            .expect("skill should still exist");
+        assert_eq!(skill.name, "Beta Changed");
     }
 }

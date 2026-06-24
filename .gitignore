@@ -32,9 +32,7 @@ dist-ssr
 *.sw?
 
 .claude
-docs
 !docs/
-docs/*
 !docs/adr/
 !docs/adr/**
 reference

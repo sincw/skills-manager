@@ -70,9 +70,9 @@ If the command prints anything, stop. Do not inspect, scan, or update the map fr
 
 ## Scanner
 
-Use Content7 MCP as the primary way to create or review the map. Start with Content7 and let it drive the repository orientation, entry-point discovery, flow review, and module-boundary review.
+Use context7 MCP as the primary way to create or review the map. Start with context7 and let it drive the repository orientation, entry-point discovery, flow review, and module-boundary review.
 
-Use targeted file reads for concrete code details, exact local facts such as command names, and verification of unclear or incomplete Content7 output. If Content7 or the configured scanner service is unavailable, fails, or lacks access to the repository, report that fallback reason and continue only when the required navigation facts can be verified from git metadata and targeted reads. Do not silently perform a broad manual repository scan.
+Use targeted file reads for concrete code details, exact local facts such as command names, and verification of unclear or incomplete context7 output. If context7 or the configured scanner service is unavailable, fails, or lacks access to the repository, report that fallback reason and continue only when the required navigation facts can be verified from git metadata and targeted reads. Do not silently perform a broad manual repository scan.
 
 ## Map Content
 
@@ -121,7 +121,7 @@ Steps:
 1. Verify clean workspace.
 2. Capture HEAD with `git rev-parse HEAD`.
 3. Confirm `docs/agents/codebase-map/state.json` does not exist.
-4. Use Content7 as the primary source, plus targeted code reads for details and verification, to identify stable navigation facts.
+4. Use context7 as the primary source, plus targeted code reads for details and verification, to identify stable navigation facts.
 5. Write `docs/agents/codebase-map/codebase-map.md`.
 6. Write `docs/agents/codebase-map/state.json` with `reviewed_source_commit` set to captured HEAD.
 7. Report generated files, reviewed commit, scanner used, and low-confidence areas.
@@ -153,7 +153,7 @@ Steps:
    - `map-impacting`: durable navigation facts may have changed.
    - `non-map-impacting`: routine fixes or local implementation changes.
 
-7. Review only the map-impacting areas with Content7 as the primary source, using targeted code reads for details and verification.
+7. Review only the map-impacting areas with context7 as the primary source, using targeted code reads for details and verification.
 8. If durable navigation facts changed, update only affected sections of `codebase-map.md`.
 9. Update `state.json.reviewed_source_commit` to HEAD and refresh `generated_at`.
 10. Report:

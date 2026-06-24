@@ -527,6 +527,37 @@ describe("routes", () => {
     }
   });
 
+  it("unsyncs a managed skill from a global workspace before returning success", async () => {
+    const config = makeDbBackedCliConfig();
+    const app = await createServer(config);
+    const syncResponse = await app.inject({
+      method: "POST",
+      url: "/api/skills/alpha/sync-tool",
+      payload: { tool: "codex" },
+    });
+    const targetPath = syncResponse.json().data.target_path;
+    expect(existsSync(path.join(targetPath, "SKILL.md"))).toBe(true);
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/skills/alpha/sync-tool",
+      payload: { tool: "codex" },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(existsSync(targetPath)).toBe(false);
+
+    const db = new DatabaseSync(path.join(config.dataDir, "skills-manager.db"));
+    try {
+      expect(db.prepare("SELECT COUNT(*) AS count FROM skill_targets WHERE skill_id = ?").get("alpha")).toEqual({
+        count: 0,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("exports a managed skill into the selected project agent directory", async () => {
     const config = makeDbBackedCliConfig();
     const projectPath = path.join(config.dataDir, "project");
@@ -548,5 +579,34 @@ describe("routes", () => {
     const targetPath = response.json().data.targets[0].target_path;
     expect(targetPath).toBe(path.join(projectPath, ".codex", "skills", "alpha-skill"));
     expect(existsSync(path.join(targetPath, "SKILL.md"))).toBe(true);
+  });
+
+  it("deletes a project workspace skill from the selected agent directory", async () => {
+    const config = makeDbBackedCliConfig();
+    const projectPath = path.join(config.dataDir, "project");
+    const app = await createServer(config);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { path: projectPath },
+    });
+    const project = created.json().data;
+    await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/skills/export`,
+      payload: { skill: "alpha", agents: ["codex"] },
+    });
+
+    const targetPath = path.join(projectPath, ".codex", "skills", "alpha-skill");
+    expect(existsSync(path.join(targetPath, "SKILL.md"))).toBe(true);
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/api/projects/${project.id}/skills/codex/alpha-skill`,
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(existsSync(targetPath)).toBe(false);
   });
 });

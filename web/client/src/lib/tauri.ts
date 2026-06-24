@@ -780,9 +780,8 @@ export const adoptGitSkill = (input: {
 export const syncSkillToTool = async (skillId: string, toolKey: string) => {
   await post<unknown>(`/api/skills/${encodeRef(skillId)}/sync-tool`, { tool: toolKey });
 };
-export const unsyncSkillFromTool = (skillId: string, toolKey: string) => {
-  ignoreArgs(skillId, toolKey);
-  return unsupported("Single skill unsync");
+export const unsyncSkillFromTool = async (skillId: string, toolKey: string) => {
+  await del<unknown>(`/api/skills/${encodeRef(skillId)}/sync-tool`, { tool: toolKey });
 };
 export const getSkillToolToggles = async (skillId: string, _presetId: string): Promise<SkillToolToggle[]> => {
   void _presetId;
@@ -992,9 +991,10 @@ export const toggleProjectSkill = (
   ignoreArgs(projectId, relativePath, agent, enabled);
   return unsupported("Project skill toggle");
 };
-export const deleteProjectSkill = (projectId: string, relativePath: string, agent: string) => {
-  ignoreArgs(projectId, relativePath, agent);
-  return unsupported("Project delete");
+export const deleteProjectSkill = async (projectId: string, relativePath: string, agent: string) => {
+  await del<unknown>(
+    `/api/projects/${encodeRef(projectId)}/skills/${encodeRef(agent)}/${encodeRef(relativePath)}`,
+  );
 };
 export const slugifySkillNames = async (names: string[]) =>
   names.map((name) =>
@@ -1038,9 +1038,10 @@ export const updateGlobalLocalSkillFromCenter = (agentKey: string, relativePath:
   ignoreArgs(agentKey, relativePath);
   return unsupported("Global workspace update");
 };
-export const deleteGlobalLocalSkill = (agentKey: string, relativePath: string) => {
-  ignoreArgs(agentKey, relativePath);
-  return unsupported("Global workspace delete");
+export const deleteGlobalLocalSkill = async (agentKey: string, relativePath: string) => {
+  await del<unknown>(
+    `/api/workspaces/global/${encodeRef(agentKey)}/skills/${encodeRef(relativePath)}`,
+  );
 };
 
 export const previewPreset = (id: string) =>

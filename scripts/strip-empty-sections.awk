@@ -1,6 +1,6 @@
 # Strip "### Heading" blocks that have no non-empty bullet underneath.
 # Used by .github/workflows/release.yml to keep empty placeholder sections
-# (left over from scripts/prepare-release.mjs) out of GitHub release notes.
+# out of GitHub release notes.
 
 /^### / {
   if (header_pending) flush()

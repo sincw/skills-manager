@@ -12,7 +12,7 @@ export const ERROR_KINDS = [
 
 export type ErrorKind = (typeof ERROR_KINDS)[number];
 
-/** Structured error returned by Tauri commands. */
+/** Structured error returned by the Rust/Web API boundary. */
 export interface AppError {
   kind: ErrorKind;
   message: string;

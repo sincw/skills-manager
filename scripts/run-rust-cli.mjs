@@ -35,14 +35,14 @@ const mode = process.argv[2];
 const extraArgs = process.argv.slice(3);
 const cargo = resolveCargo();
 
-const baseArgs = ['--manifest-path', 'src-tauri/Cargo.toml', '--bin', 'skills-manager-cli'];
+const baseArgs = ['--manifest-path', 'cli/Cargo.toml', '--bin', 'skills-manager-cli'];
 const cargoArgs =
   mode === 'cli'
     ? ['run', '--quiet', ...baseArgs, '--', ...extraArgs]
     : mode === 'build'
       ? ['build', ...baseArgs]
       : mode === 'install'
-        ? ['install', '--path', 'src-tauri', '--bin', 'skills-manager-cli', '--locked', '--force']
+        ? ['install', '--path', 'cli', '--bin', 'skills-manager-cli', '--locked', '--force']
         : null;
 
 if (!cargoArgs) {

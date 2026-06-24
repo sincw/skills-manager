@@ -46,7 +46,7 @@ export function useTheme() {
     return () => mq.removeEventListener("change", handler);
   }, [theme]);
 
-  // Load from Tauri settings on mount
+  // Load from the Web companion settings adapter on mount.
   useEffect(() => {
     api.getSettings("theme").then((v) => {
       if (v === "light" || v === "dark" || v === "system") {

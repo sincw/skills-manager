@@ -39,5 +39,5 @@ export async function check(): Promise<{ downloadAndInstall(): Promise<void> } |
 export async function invoke<T>(_command: string, _args?: unknown): Promise<T> {
   void _command;
   void _args;
-  throw new Error("Tauri invoke is not available in the Web companion");
+  throw new Error("Desktop invoke is not available in the Web companion");
 }

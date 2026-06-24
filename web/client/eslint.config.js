@@ -9,7 +9,7 @@ export default defineConfig([
   globalIgnores([
     'dist',
     'reference/**',
-    'src-tauri/target/**',
+    '../../cli/target/**',
     'src/App.tsx',
     'src/components/**',
     '!src/components/AgentIcon.tsx',

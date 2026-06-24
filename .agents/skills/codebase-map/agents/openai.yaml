@@ -1,0 +1,6 @@
+interface:
+  display_name: "Codebase Map"
+  short_description: "Maintain agent navigation maps"
+  default_prompt: "Use $codebase-map to bootstrap or update the repository navigation map."
+policy:
+  allow_implicit_invocation: false

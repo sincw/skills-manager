@@ -1361,10 +1361,9 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
   );
 
   app.get<{ Querystring: { root?: string } }>("/api/projects/scan", async (request, reply) => {
+    let root: string;
     try {
-      const root = expandLinuxPath(nonEmptyString(request.query.root, "root"));
-      const tools = await readTools(request, ctx);
-      return { ok: true, data: await scanProjectDirectories(root, projectScanPaths(tools)) };
+      root = expandLinuxPath(nonEmptyString(request.query.root, "root"));
     } catch (error) {
       reply.code(400);
       return {
@@ -1372,9 +1371,15 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
         error: error instanceof Error ? error.message : "failed to scan projects",
       };
     }
+    const info = await stat(root).catch(() => null);
+    if (!info?.isDirectory()) {
+      reply.code(400);
+      return { ok: false, error: "root must be a directory" };
+    }
+    return directCli(request, reply, ctx, ["workspaces", "scan", root]);
   });
 
-  app.get("/api/projects", async () => ({ ok: true, data: await readProjectRegistry(config) }));
+  app.get("/api/projects", (request, reply) => directCli(request, reply, ctx, ["workspaces", "list"]));
   app.post("/api/projects", async (request) => {
     const body = asRecord(request.body);
     const projectPath = expandLinuxPath(nonEmptyString(body.path, "path"));
@@ -1449,36 +1454,12 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
     await writeProjectRegistry(config, nextProjects);
     reply.send({ ok: true, data: true });
   });
-  app.get<{ Params: { id: string } }>("/api/projects/:id/agent-targets", async (request, reply) => {
-    const id = refParam(request.params.id);
-    const projects = await readProjectRegistry(config);
-    if (!projects.some((project) => project.id === id)) {
-      reply.code(404).send({ ok: false, error: "project not found" });
-      return;
-    }
-    const tools = await readTools(request, ctx);
-    reply.send({ ok: true, data: tools });
-  });
-  app.get<{ Params: { id: string } }>("/api/projects/:id/skills", async (request, reply) => {
-    const id = refParam(request.params.id);
-    const projects = await readProjectRegistry(config);
-    const project = projects.find((item) => item.id === id);
-    if (!project) {
-      reply.code(404).send({ ok: false, error: "project not found" });
-      return;
-    }
-    const tools = await readTools(request, ctx);
-    const skillsByTool = await Promise.all(
-      tools
-        .filter((tool) => tool.installed && tool.enabled)
-        .map(async (tool) => {
-          const rootDir = projectSkillRoot(project, tool);
-          if (!rootDir || !(await directoryExists(rootDir))) return [];
-          return readSkillsDirectory(rootDir, tool);
-        }),
-    );
-    reply.send({ ok: true, data: skillsByTool.flat() });
-  });
+  app.get<{ Params: { id: string } }>("/api/projects/:id/agent-targets", (request, reply) =>
+    directCli(request, reply, ctx, ["workspaces", "agent-targets", refParam(request.params.id)]),
+  );
+  app.get<{ Params: { id: string } }>("/api/projects/:id/skills", (request, reply) =>
+    directCli(request, reply, ctx, ["workspaces", "skills", refParam(request.params.id)]),
+  );
   app.post<{ Params: { id: string } }>("/api/projects/:id/skills/export", async (request, reply) => {
     const id = refParam(request.params.id);
     const body = asRecord(request.body);
@@ -1527,30 +1508,14 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
   );
   app.get<{ Params: { id: string; agent: string; relativePath: string } }>(
     "/api/projects/:id/skills/:agent/:relativePath/document",
-    async (request, reply) => {
-      const id = refParam(request.params.id);
-      const agentKey = refParam(request.params.agent);
-      const relativePath = refParam(request.params.relativePath);
-      const projects = await readProjectRegistry(config);
-      const project = projects.find((item) => item.id === id);
-      if (!project) {
-        reply.code(404).send({ ok: false, error: "project not found" });
-        return;
-      }
-      const tools = await readTools(request, ctx);
-      const tool = tools.find((item) => item.key === agentKey);
-      if (!tool) {
-        reply.code(404).send({ ok: false, error: "agent not found" });
-        return;
-      }
-      const rootDir = projectSkillRoot(project, tool);
-      if (!rootDir) {
-        reply.code(404).send({ ok: false, error: "project skill root not found" });
-        return;
-      }
-      const document = await readWorkspaceDocument(rootDir, relativePath);
-      reply.send({ ok: true, data: document });
-    },
+    (request, reply) =>
+      directCli(request, reply, ctx, [
+        "workspaces",
+        "document",
+        refParam(request.params.id),
+        refParam(request.params.agent),
+        refParam(request.params.relativePath),
+      ]),
   );
 
   app.get("/api/git/status", (request, reply) => directCli(request, reply, ctx, ["git", "status"]));

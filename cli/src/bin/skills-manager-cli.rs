@@ -189,6 +189,23 @@ struct WorkspacesArgs {
 
 #[derive(Subcommand, Debug)]
 enum WorkspacesCommand {
+    List,
+    Scan {
+        root: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        max_depth: usize,
+    },
+    AgentTargets {
+        workspace_id: String,
+    },
+    Skills {
+        workspace_id: String,
+    },
+    Document {
+        workspace_id: String,
+        tool: String,
+        relative_path: String,
+    },
     Global(GlobalWorkspaceArgs),
 }
 
@@ -530,6 +547,42 @@ fn run_tools(args: ToolsArgs, store: &SkillStore, json: bool) -> anyhow::Result<
 
 fn run_workspaces(args: WorkspacesArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
     match args.command {
+        WorkspacesCommand::List => {
+            let workspaces =
+                workspace_service::list_registered_workspaces(store).map_err(map_app_err)?;
+            print_json(&workspaces, json);
+        }
+        WorkspacesCommand::Scan { root, max_depth } => {
+            let workspaces =
+                workspace_service::scan_registered_workspace_candidates(store, &root, max_depth)
+                    .map_err(map_app_err)?;
+            print_json(&workspaces, json);
+        }
+        WorkspacesCommand::AgentTargets { workspace_id } => {
+            let targets =
+                workspace_service::list_registered_workspace_agent_targets(store, &workspace_id)
+                    .map_err(map_app_err)?;
+            print_json(&targets, json);
+        }
+        WorkspacesCommand::Skills { workspace_id } => {
+            let skills = workspace_service::list_registered_workspace_skills(store, &workspace_id)
+                .map_err(map_app_err)?;
+            print_json(&skills, json);
+        }
+        WorkspacesCommand::Document {
+            workspace_id,
+            tool,
+            relative_path,
+        } => {
+            let document = workspace_service::read_registered_workspace_skill_document(
+                store,
+                &workspace_id,
+                &tool,
+                &relative_path,
+            )
+            .map_err(map_app_err)?;
+            print_json(&document, json);
+        }
         WorkspacesCommand::Global(global) => run_global_workspace(global, store, json)?,
     }
     Ok(())

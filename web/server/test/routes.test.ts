@@ -301,7 +301,7 @@ describe("routes", () => {
     expect(authed.statusCode).toBe(200);
   });
 
-  it("persists web project registry records and exposes project agent targets", async () => {
+  it("routes registered workspace reads through the workspaces CLI seam", async () => {
     const app = await createServer(makeConfig());
 
     const created = await app.inject({
@@ -316,18 +316,59 @@ describe("routes", () => {
 
     const list = await app.inject({ method: "GET", url: "/api/projects" });
     expect(list.statusCode).toBe(200);
-    expect(list.json().data).toHaveLength(1);
-    expect(list.json().data[0].id).toBe(project.id);
+    expect(list.json().ok).toBe(true);
+    expect(list.json().data.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "list",
+    ]);
 
     const targets = await app.inject({
       method: "GET",
       url: `/api/projects/${project.id}/agent-targets`,
     });
+    expect(targets.statusCode).toBe(200);
+    expect(targets.json().data.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "agent-targets",
+      project.id,
+    ]);
+
+    const skills = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/skills`,
+    });
+    expect(skills.statusCode).toBe(200);
+    expect(skills.json().data.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "skills",
+      project.id,
+    ]);
+
+    const document = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/skills/codex/research%2Falpha/document`,
+    });
     await app.close();
 
-    expect(targets.statusCode).toBe(200);
-    expect(targets.json().data).toEqual([
-      expect.objectContaining({ key: "codex", display_name: "Codex" }),
+    expect(document.statusCode).toBe(200);
+    expect(document.json().data.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "document",
+      project.id,
+      "codex",
+      "research/alpha",
     ]);
   });
 
@@ -364,23 +405,33 @@ describe("routes", () => {
     expect(rejected.json().error).toContain("absolute Linux path");
   });
 
-  it("scans a root directory for project workspaces with agent skills directories", async () => {
+  it("routes project workspace scan through the workspaces CLI seam", async () => {
     const config = makeConfig();
     const root = path.join(config.dataDir, "scan-root");
-    const project = path.join(root, "project-one");
-    const ignored = path.join(root, "not-a-project");
-    mkdirSync(path.join(project, ".codex", "skills"), { recursive: true });
-    mkdirSync(ignored, { recursive: true });
+    mkdirSync(root, { recursive: true });
 
     const app = await createServer(config);
     const response = await app.inject({
       method: "GET",
       url: `/api/projects/scan?root=${encodeURIComponent(root)}`,
     });
+    const rejected = await app.inject({
+      method: "GET",
+      url: `/api/projects/scan?root=${encodeURIComponent(path.join(root, "missing"))}`,
+    });
     await app.close();
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().data).toEqual([project]);
+    expect(response.json().data.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "scan",
+      root,
+    ]);
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().error).toContain("root must be a directory");
   });
 
   it("routes global workspace skill listing through the workspaces CLI seam", async () => {

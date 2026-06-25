@@ -4,16 +4,220 @@ use serde::Serialize;
 
 use super::{
     error::AppError,
-    project_scanner::{self, ProjectSkillInfo},
-    skill_store::{SkillRecord, SkillStore, SkillTargetRecord},
-    tool_adapters,
+    project_scanner::{self, AgentSkillConfig, ProjectSkillInfo},
+    skill_store::{ProjectRecord, SkillRecord, SkillStore, SkillTargetRecord},
+    tool_adapters, tool_service,
 };
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct WorkspaceSyncHealth {
+    pub in_sync: usize,
+    pub project_newer: usize,
+    pub center_newer: usize,
+    pub diverged: usize,
+    pub project_only: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RegisteredWorkspaceInfo {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub workspace_type: String,
+    pub linked_agent_name: Option<String>,
+    pub supports_skill_toggle: bool,
+    pub sort_order: i32,
+    pub skill_count: usize,
+    pub sync_health: WorkspaceSyncHealth,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceSkillDocument {
     pub skill_name: String,
     pub filename: String,
     pub content: String,
+}
+
+pub fn list_registered_workspaces(
+    store: &SkillStore,
+) -> Result<Vec<RegisteredWorkspaceInfo>, AppError> {
+    let projects = store.get_all_projects().map_err(AppError::db)?;
+    let mut workspaces = Vec::with_capacity(projects.len());
+    for project in projects {
+        let skills = read_registered_workspace_skills(store, &project)?;
+        let skills = enrich_registered_workspace_skills(store, skills)?;
+        workspaces.push(workspace_info(&project, skills));
+    }
+    Ok(workspaces)
+}
+
+pub fn list_registered_workspace_skills(
+    store: &SkillStore,
+    workspace_id: &str,
+) -> Result<Vec<ProjectSkillInfo>, AppError> {
+    let project = store
+        .get_project_by_id(workspace_id)
+        .map_err(AppError::db)?
+        .ok_or_else(|| AppError::not_found("workspace not found"))?;
+    let skills = read_registered_workspace_skills(store, &project)?;
+    enrich_registered_workspace_skills(store, skills)
+}
+
+pub fn read_registered_workspace_skill_document(
+    store: &SkillStore,
+    workspace_id: &str,
+    agent_key: &str,
+    relative_path: &str,
+) -> Result<WorkspaceSkillDocument, AppError> {
+    let project = store
+        .get_project_by_id(workspace_id)
+        .map_err(AppError::db)?
+        .ok_or_else(|| AppError::not_found("workspace not found"))?;
+    let adapter = tool_adapters::find_adapter_with_store(store, agent_key)
+        .ok_or_else(|| AppError::not_found("Tool not found"))?;
+    let skill_root = registered_workspace_skill_root(&project, &adapter);
+    let skill_dir = workspace_skill_target_path(&skill_root, relative_path)?;
+    let content = read_skill_document(&skill_dir)?;
+
+    Ok(WorkspaceSkillDocument {
+        skill_name: skill_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        filename: "SKILL.md".to_string(),
+        content,
+    })
+}
+
+pub fn scan_registered_workspace_candidates(
+    store: &SkillStore,
+    root: &Path,
+    max_depth: usize,
+) -> Result<Vec<String>, AppError> {
+    if !root.is_dir() {
+        return Err(AppError::invalid_input("root must be a directory"));
+    }
+    let configs = project_agent_skill_configs(store);
+    Ok(project_scanner::scan_projects_in_dir(
+        root, max_depth, &configs,
+    ))
+}
+
+pub fn list_registered_workspace_agent_targets(
+    store: &SkillStore,
+    workspace_id: &str,
+) -> Result<Vec<tool_service::ToolInfo>, AppError> {
+    store
+        .get_project_by_id(workspace_id)
+        .map_err(AppError::db)?
+        .ok_or_else(|| AppError::not_found("workspace not found"))?;
+    Ok(tool_service::list_tool_info(store))
+}
+
+fn workspace_info(
+    project: &ProjectRecord,
+    skills: Vec<ProjectSkillInfo>,
+) -> RegisteredWorkspaceInfo {
+    let mut sync_health = WorkspaceSyncHealth::default();
+    for skill in &skills {
+        match skill.sync_status.as_str() {
+            "in_sync" => sync_health.in_sync += 1,
+            "project_newer" => sync_health.project_newer += 1,
+            "center_newer" => sync_health.center_newer += 1,
+            "diverged" => sync_health.diverged += 1,
+            _ => sync_health.project_only += 1,
+        }
+    }
+
+    RegisteredWorkspaceInfo {
+        id: project.id.clone(),
+        name: project.name.clone(),
+        path: project.path.clone(),
+        workspace_type: project.workspace_type.clone(),
+        linked_agent_name: project.linked_agent_name.clone(),
+        supports_skill_toggle: project.workspace_type != "linked",
+        sort_order: project.sort_order,
+        skill_count: skills.len(),
+        sync_health,
+        created_at: project.created_at,
+        updated_at: project.updated_at,
+    }
+}
+
+fn read_registered_workspace_skills(
+    store: &SkillStore,
+    project: &ProjectRecord,
+) -> Result<Vec<ProjectSkillInfo>, AppError> {
+    if project.workspace_type == "linked" {
+        let agent_key = project
+            .linked_agent_key
+            .clone()
+            .unwrap_or_else(|| "linked".to_string());
+        let agent_display_name = project
+            .linked_agent_name
+            .clone()
+            .unwrap_or_else(|| project.name.clone());
+        let disabled_path = project.disabled_path.as_ref().map(PathBuf::from);
+        let recursive = tool_adapters::find_adapter_with_store(store, &agent_key)
+            .map(|adapter| adapter.recursive_scan)
+            .unwrap_or(false);
+        return Ok(project_scanner::read_linked_workspace_skills(
+            Path::new(&project.path),
+            disabled_path.as_deref(),
+            &agent_key,
+            &agent_display_name,
+            recursive,
+        ));
+    }
+
+    let configs = project_agent_skill_configs(store);
+    Ok(project_scanner::read_project_skills(
+        Path::new(&project.path),
+        &configs,
+    ))
+}
+
+fn registered_workspace_skill_root(
+    project: &ProjectRecord,
+    adapter: &tool_adapters::ToolAdapter,
+) -> PathBuf {
+    if project.workspace_type == "linked" {
+        return PathBuf::from(&project.path);
+    }
+    PathBuf::from(&project.path).join(adapter.project_relative_skills_dir())
+}
+
+fn project_agent_skill_configs(store: &SkillStore) -> Vec<AgentSkillConfig> {
+    tool_service::list_tool_info(store)
+        .into_iter()
+        .filter(|tool| tool.installed && tool.enabled)
+        .filter_map(|tool| {
+            let relative_skills_dir = tool.project_relative_skills_dir?;
+            Some(AgentSkillConfig {
+                key: tool.key,
+                display_name: tool.display_name,
+                relative_skills_dir,
+            })
+        })
+        .collect()
+}
+
+fn enrich_registered_workspace_skills(
+    store: &SkillStore,
+    skills: Vec<ProjectSkillInfo>,
+) -> Result<Vec<ProjectSkillInfo>, AppError> {
+    let all_skills = store.get_all_skills().map_err(AppError::db)?;
+    let tags_map = store.get_tags_map().map_err(AppError::db)?;
+    let mut enriched = Vec::with_capacity(skills.len());
+
+    for skill in skills {
+        let matched = match_center_skill("", &skill, &all_skills, &[]);
+        enriched.push(enrich_skill(skill, matched, &tags_map));
+    }
+
+    Ok(enriched)
 }
 
 pub fn list_global_workspace_skills(
@@ -200,8 +404,13 @@ fn read_skill_document(skill_dir: &Path) -> Result<String, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{list_global_workspace_skills, read_global_workspace_skill_document};
-    use crate::core::skill_store::{SkillRecord, SkillStore};
+    use super::{
+        list_global_workspace_skills, list_registered_workspace_agent_targets,
+        list_registered_workspace_skills, list_registered_workspaces,
+        read_global_workspace_skill_document, read_registered_workspace_skill_document,
+        scan_registered_workspace_candidates,
+    };
+    use crate::core::skill_store::{ProjectRecord, SkillRecord, SkillStore};
     use std::fs;
     use tempfile::tempdir;
 
@@ -234,6 +443,354 @@ mod tests {
             last_checked_at: None,
             last_check_error: None,
         }
+    }
+
+    fn make_project(
+        id: &str,
+        name: &str,
+        path: &str,
+        workspace_type: &str,
+        linked_agent_key: Option<&str>,
+        linked_agent_name: Option<&str>,
+        disabled_path: Option<&str>,
+        sort_order: i32,
+        created_at: i64,
+        updated_at: i64,
+    ) -> ProjectRecord {
+        ProjectRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            path: path.to_string(),
+            workspace_type: workspace_type.to_string(),
+            linked_agent_key: linked_agent_key.map(|value| value.to_string()),
+            linked_agent_name: linked_agent_name.map(|value| value.to_string()),
+            disabled_path: disabled_path.map(|value| value.to_string()),
+            sort_order,
+            created_at,
+            updated_at,
+        }
+    }
+
+    #[test]
+    fn registered_workspace_listing_reads_project_and_linked_records_from_store() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+
+        store
+            .insert_project(&make_project(
+                "project-1",
+                "Alpha",
+                "/workspace/alpha",
+                "project",
+                None,
+                None,
+                None,
+                0,
+                10,
+                20,
+            ))
+            .unwrap();
+        store
+            .insert_project(&make_project(
+                "linked-1",
+                "Bravo",
+                "/workspace/bravo",
+                "linked",
+                Some("codex"),
+                Some("Codex"),
+                Some("/workspace/bravo-disabled"),
+                1,
+                30,
+                40,
+            ))
+            .unwrap();
+
+        let workspaces = list_registered_workspaces(&store).unwrap();
+
+        assert_eq!(workspaces.len(), 2);
+        assert_eq!(workspaces[0].id, "project-1");
+        assert_eq!(workspaces[0].workspace_type, "project");
+        assert_eq!(workspaces[0].supports_skill_toggle, true);
+        assert_eq!(workspaces[1].id, "linked-1");
+        assert_eq!(workspaces[1].workspace_type, "linked");
+        assert_eq!(workspaces[1].linked_agent_name.as_deref(), Some("Codex"));
+        assert_eq!(workspaces[1].supports_skill_toggle, false);
+    }
+
+    #[test]
+    fn registered_workspace_skill_listing_enriches_matching_skills() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let center_root = tmp.path().join("center");
+        let workspace_root = tmp.path().join("workspace");
+        let skill_root = workspace_root.join(".codex").join("skills");
+        fs::create_dir_all(&center_root).unwrap();
+        fs::create_dir_all(&skill_root).unwrap();
+
+        store
+            .set_setting(
+                "custom_tool_paths",
+                &serde_json::json!({"codex": workspace_root.to_string_lossy().to_string()})
+                    .to_string(),
+            )
+            .unwrap();
+
+        let in_sync = skill_root.join("in-sync");
+        let project_newer = skill_root.join("project-newer");
+        let center_newer = skill_root.join("center-newer");
+        let diverged = skill_root.join("diverged");
+        let project_only = skill_root.join("project-only");
+        for dir in [
+            &in_sync,
+            &project_newer,
+            &center_newer,
+            &diverged,
+            &project_only,
+        ] {
+            fs::create_dir_all(dir).unwrap();
+        }
+
+        fs::write(in_sync.join("SKILL.md"), "---\nname: In Sync\n---\n").unwrap();
+        fs::write(
+            project_newer.join("SKILL.md"),
+            "---\nname: Project Newer\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            center_newer.join("SKILL.md"),
+            "---\nname: Center Newer\n---\n",
+        )
+        .unwrap();
+        fs::write(diverged.join("SKILL.md"), "---\nname: Diverged\n---\n").unwrap();
+        fs::write(
+            project_only.join("SKILL.md"),
+            "---\nname: Project Only\n---\n",
+        )
+        .unwrap();
+
+        let in_sync_hash = crate::core::content_hash::hash_directory(&in_sync).unwrap();
+        let in_sync_ms = fs::metadata(&in_sync)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let diverged_ms = fs::metadata(&diverged)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        store
+            .upsert_skill(&make_skill(
+                "skill-in-sync",
+                "In Sync",
+                center_root.join("in-sync").to_string_lossy().as_ref(),
+                Some("center description"),
+                Some(&in_sync_hash),
+                in_sync_ms,
+            ))
+            .unwrap();
+        store
+            .upsert_skill(&make_skill(
+                "skill-project-newer",
+                "Project Newer",
+                center_root.join("project-newer").to_string_lossy().as_ref(),
+                Some("center description"),
+                Some("center-hash"),
+                1,
+            ))
+            .unwrap();
+        store
+            .upsert_skill(&make_skill(
+                "skill-center-newer",
+                "Center Newer",
+                center_root.join("center-newer").to_string_lossy().as_ref(),
+                Some("center description"),
+                Some("center-hash"),
+                i64::MAX / 4,
+            ))
+            .unwrap();
+        store
+            .upsert_skill(&make_skill(
+                "skill-diverged",
+                "Diverged",
+                center_root.join("diverged").to_string_lossy().as_ref(),
+                Some("center description"),
+                Some("center-hash"),
+                diverged_ms,
+            ))
+            .unwrap();
+
+        store
+            .insert_project(&make_project(
+                "project-1",
+                "Project",
+                workspace_root.to_string_lossy().as_ref(),
+                "project",
+                None,
+                None,
+                None,
+                0,
+                10,
+                20,
+            ))
+            .unwrap();
+
+        let skills = list_registered_workspace_skills(&store, "project-1").unwrap();
+        let by_name = skills
+            .into_iter()
+            .map(|skill| (skill.name.clone(), skill))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(by_name["In Sync"].sync_status, "in_sync");
+        assert_eq!(by_name["Project Newer"].sync_status, "project_newer");
+        assert_eq!(by_name["Center Newer"].sync_status, "center_newer");
+        assert_eq!(by_name["Diverged"].sync_status, "diverged");
+        assert_eq!(by_name["Project Only"].sync_status, "project_only");
+
+        let workspaces = list_registered_workspaces(&store).unwrap();
+        let health = &workspaces[0].sync_health;
+        assert_eq!(workspaces[0].skill_count, 5);
+        assert_eq!(health.in_sync, 1);
+        assert_eq!(health.project_newer, 1);
+        assert_eq!(health.center_newer, 1);
+        assert_eq!(health.diverged, 1);
+        assert_eq!(health.project_only, 1);
+    }
+
+    #[test]
+    fn registered_workspace_skill_listing_reads_linked_workspace_root() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let center_root = tmp.path().join("center");
+        let workspace_root = tmp.path().join("linked-workspace");
+        let skill_dir = workspace_root.join("alpha");
+        fs::create_dir_all(&center_root).unwrap();
+        fs::create_dir_all(&skill_dir).unwrap();
+
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: Alpha\n---\n").unwrap();
+        let skill_hash = crate::core::content_hash::hash_directory(&skill_dir).unwrap();
+        let skill_ms = fs::metadata(&skill_dir)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        store
+            .upsert_skill(&make_skill(
+                "skill-alpha",
+                "Alpha",
+                center_root.join("alpha").to_string_lossy().as_ref(),
+                Some("center description"),
+                Some(&skill_hash),
+                skill_ms,
+            ))
+            .unwrap();
+        store
+            .insert_project(&make_project(
+                "linked-1",
+                "Linked",
+                workspace_root.to_string_lossy().as_ref(),
+                "linked",
+                Some("codex"),
+                Some("Codex"),
+                Some(workspace_root.join("disabled").to_string_lossy().as_ref()),
+                0,
+                10,
+                20,
+            ))
+            .unwrap();
+
+        let skills = list_registered_workspace_skills(&store, "linked-1").unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "Alpha");
+        assert_eq!(skills[0].sync_status, "in_sync");
+    }
+
+    #[test]
+    fn registered_workspace_document_reads_linked_workspace_root() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let workspace_root = tmp.path().join("linked-workspace");
+        let skill_dir = workspace_root.join("docs").join("alpha");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Alpha\n\nBody\n").unwrap();
+
+        store
+            .insert_project(&make_project(
+                "linked-1",
+                "Linked",
+                workspace_root.to_string_lossy().as_ref(),
+                "linked",
+                Some("codex"),
+                Some("Codex"),
+                Some(workspace_root.join("disabled").to_string_lossy().as_ref()),
+                0,
+                10,
+                20,
+            ))
+            .unwrap();
+
+        let doc =
+            read_registered_workspace_skill_document(&store, "linked-1", "codex", "docs/alpha")
+                .unwrap();
+
+        assert_eq!(doc.skill_name, "alpha");
+        assert_eq!(doc.filename, "SKILL.md");
+        assert!(doc.content.contains("# Alpha"));
+    }
+
+    #[test]
+    fn scan_registered_workspace_candidates_uses_tool_project_paths() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let root = tmp.path().join("scan-root");
+        let project = root.join("project-a");
+        let ignored = root.join("project-b");
+        fs::create_dir_all(project.join(".codex").join("skills")).unwrap();
+        fs::create_dir_all(&ignored).unwrap();
+
+        store
+            .set_setting(
+                "custom_tool_paths",
+                &serde_json::json!({"codex": tmp.path().join("codex").to_string_lossy().to_string()})
+                    .to_string(),
+            )
+            .unwrap();
+
+        let candidates = scan_registered_workspace_candidates(&store, &root, 3).unwrap();
+
+        assert_eq!(candidates, vec![project.to_string_lossy().to_string()]);
+    }
+
+    #[test]
+    fn registered_workspace_agent_targets_require_a_workspace_id() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        store
+            .insert_project(&make_project(
+                "project-1",
+                "Project",
+                "/workspace/project",
+                "project",
+                None,
+                None,
+                None,
+                0,
+                10,
+                20,
+            ))
+            .unwrap();
+
+        let targets = list_registered_workspace_agent_targets(&store, "project-1").unwrap();
+        assert!(!targets.is_empty());
+        assert!(list_registered_workspace_agent_targets(&store, "missing").is_err());
     }
 
     #[test]

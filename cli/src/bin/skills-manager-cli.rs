@@ -245,6 +245,9 @@ struct GlobalWorkspaceArgs {
 enum GlobalWorkspaceCommand {
     ListSkills { tool: String },
     Document { tool: String, relative_path: String },
+    Sync { tool: String, skill_ref: String },
+    Unsync { tool: String, skill_ref: String },
+    DeleteSkill { tool: String, relative_path: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -689,6 +692,27 @@ fn run_global_workspace(
             )
             .map_err(map_app_err)?;
             print_json(&document, json);
+        }
+        GlobalWorkspaceCommand::Sync { tool, skill_ref } => {
+            let report =
+                workspace_service::sync_skill_to_global_workspace(store, &tool, &skill_ref)
+                    .map_err(map_app_err)?;
+            print_json(&report, json);
+        }
+        GlobalWorkspaceCommand::Unsync { tool, skill_ref } => {
+            let report =
+                workspace_service::unsync_skill_from_global_workspace(store, &tool, &skill_ref)
+                    .map_err(map_app_err)?;
+            print_json(&report, json);
+        }
+        GlobalWorkspaceCommand::DeleteSkill {
+            tool,
+            relative_path,
+        } => {
+            let report =
+                workspace_service::delete_global_workspace_skill(store, &tool, &relative_path)
+                    .map_err(map_app_err)?;
+            print_json(&report, json);
         }
     }
     Ok(())

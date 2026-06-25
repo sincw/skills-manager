@@ -15,44 +15,65 @@ function makeConfig(): ServerConfig {
   const cli = path.join(dir, "fake-cli.mjs");
   writeFileSync(
     cli,
-    `#!/usr/bin/env node
-import { existsSync, renameSync } from "node:fs";
-const args = process.argv.slice(2);
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-if (args.includes("skills") && args.includes("remove") && !args.includes("--dry-run") && !args.includes("--yes")) {
-  console.error(JSON.stringify({ ok: false, error: "missing --yes" }));
-  process.exit(1);
+    `#!/bin/sh
+has_arg() {
+  needle=$1
+  shift
+  for arg in "$@"; do
+    [ "$arg" = "$needle" ] && return 0
+  done
+  return 1
 }
-if (args.includes("workspaces") && args.includes("import-registry")) {
-  const registryPath = args.at(-1);
-  if (registryPath && existsSync(registryPath)) {
-    renameSync(registryPath, registryPath.replace(/projects\\.json$/, "projects.migrated-test.json"));
-  }
-  console.log(JSON.stringify({ args, imported: true }));
-  process.exit(0);
+json_escape() {
+  printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'
 }
-if (args.includes("workspaces") && ["add", "add-linked", "reorder", "remove"].some((command) => args.includes(command))) {
-  await sleep(100);
-  if (args.includes("remove") && args.includes("fail-workspace")) {
-    console.error(JSON.stringify({ ok: false, error: "workspace not found" }));
-    process.exit(1);
-  }
-  console.log(JSON.stringify({ args }));
-  process.exit(0);
+print_args() {
+  printf '{"args":['
+  sep=''
+  for arg in "$@"; do
+    escaped=$(json_escape "$arg")
+    printf '%s"%s"' "$sep" "$escaped"
+    sep=','
+  done
+  printf ']}\\n'
 }
-if (args.includes("tools") && args.includes("list")) {
-  console.log(JSON.stringify([{
-    key: "codex",
-    display_name: "Codex",
-    installed: true,
-    skills_dir: ${JSON.stringify(codexSkillsDir)},
-    enabled: true,
-    is_custom: false,
-    project_relative_skills_dir: ".codex/skills"
-  }]));
-  process.exit(0);
-}
-console.log(JSON.stringify({ args }));
+if has_arg skills "$@" && has_arg remove "$@" && ! has_arg --dry-run "$@" && ! has_arg --yes "$@"; then
+  printf '{"ok":false,"error":"missing --yes"}\\n' >&2
+  exit 1
+fi
+if has_arg workspaces "$@" && has_arg import-registry "$@"; then
+  registry_path=''
+  for arg in "$@"; do registry_path="$arg"; done
+  if [ -f "$registry_path" ]; then
+    mv "$registry_path" "\${registry_path%projects.json}projects.migrated-test.json"
+  fi
+  print_args "$@"
+  exit 0
+fi
+if has_arg workspaces "$@" && { has_arg add "$@" || has_arg add-linked "$@" || has_arg reorder "$@" || has_arg remove "$@"; }; then
+  sleep 0.1
+  if has_arg remove "$@" && has_arg fail-workspace "$@"; then
+    printf '{"ok":false,"error":"workspace not found"}\\n' >&2
+    exit 1
+  fi
+  print_args "$@"
+  exit 0
+fi
+if has_arg tools "$@" && has_arg list "$@"; then
+  printf '%s\\n' '${JSON.stringify([
+    {
+      key: "codex",
+      display_name: "Codex",
+      installed: true,
+      skills_dir: codexSkillsDir,
+      enabled: true,
+      is_custom: false,
+      project_relative_skills_dir: ".codex/skills",
+    },
+  ])}'
+  exit 0
+fi
+print_args "$@"
 `,
     { mode: 0o755 },
   );
@@ -76,25 +97,47 @@ function makeMissingWorkspaceCliConfig(): ServerConfig {
   const cli = path.join(dir, "missing-workspaces-cli.mjs");
   writeFileSync(
     cli,
-    `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (args.includes("workspaces")) {
-  console.error(JSON.stringify({ ok: false, error: "error: unrecognized subcommand 'workspaces'" }));
-  process.exit(2);
+    `#!/bin/sh
+has_arg() {
+  needle=$1
+  shift
+  for arg in "$@"; do
+    [ "$arg" = "$needle" ] && return 0
+  done
+  return 1
 }
-if (args.includes("tools") && args.includes("list")) {
-  console.log(JSON.stringify([{
-    key: "codex",
-    display_name: "Codex",
-    installed: true,
-    skills_dir: ${JSON.stringify(codexSkillsDir)},
-    enabled: true,
-    is_custom: false,
-    project_relative_skills_dir: ".codex/skills"
-  }]));
-  process.exit(0);
+json_escape() {
+  printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'
 }
-console.log(JSON.stringify({ args }));
+print_args() {
+  printf '{"args":['
+  sep=''
+  for arg in "$@"; do
+    escaped=$(json_escape "$arg")
+    printf '%s"%s"' "$sep" "$escaped"
+    sep=','
+  done
+  printf ']}\\n'
+}
+if has_arg workspaces "$@"; then
+  printf '{"ok":false,"error":"error: unrecognized subcommand '\\''workspaces'\\''"}\\n' >&2
+  exit 2
+fi
+if has_arg tools "$@" && has_arg list "$@"; then
+  printf '%s\\n' '${JSON.stringify([
+    {
+      key: "codex",
+      display_name: "Codex",
+      installed: true,
+      skills_dir: codexSkillsDir,
+      enabled: true,
+      is_custom: false,
+      project_relative_skills_dir: ".codex/skills",
+    },
+  ])}'
+  exit 0
+fi
+print_args "$@"
 `,
     { mode: 0o755 },
   );
@@ -138,20 +181,40 @@ function makeLegacyCliConfig(): ServerConfig {
   const cli = path.join(dir, "legacy-cli.mjs");
   writeFileSync(
     cli,
-    `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (args.includes("presets") && args.includes("create")) {
-  console.error(JSON.stringify({ ok: false, error: "error: unrecognized subcommand 'create'" }));
-  process.exit(1);
+    `#!/bin/sh
+has_arg() {
+  needle=$1
+  shift
+  for arg in "$@"; do
+    [ "$arg" = "$needle" ] && return 0
+  done
+  return 1
 }
-if (args.includes("repo") && args.includes("status")) {
-  console.log(JSON.stringify({
-    db_path: ${JSON.stringify(dbPath)},
-    metadata_dir: ${JSON.stringify(metadataDir)}
-  }));
-  process.exit(0);
+json_escape() {
+  printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'
 }
-console.log(JSON.stringify({ args }));
+print_args() {
+  printf '{"args":['
+  sep=''
+  for arg in "$@"; do
+    escaped=$(json_escape "$arg")
+    printf '%s"%s"' "$sep" "$escaped"
+    sep=','
+  done
+  printf ']}\\n'
+}
+if has_arg presets "$@" && has_arg create "$@"; then
+  printf '{"ok":false,"error":"error: unrecognized subcommand '\\''create'\\''"}\\n' >&2
+  exit 1
+fi
+if has_arg repo "$@" && has_arg status "$@"; then
+  printf '%s\\n' '${JSON.stringify({
+    db_path: dbPath,
+    metadata_dir: metadataDir,
+  })}'
+  exit 0
+fi
+print_args "$@"
 `,
     { mode: 0o755 },
   );
@@ -214,72 +277,120 @@ function makeDbBackedCliConfig(): ServerConfig {
   const cli = path.join(dir, "db-cli.mjs");
   writeFileSync(
     cli,
-    `#!/usr/bin/env node
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
-const args = process.argv.slice(2);
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-if (args.includes("workspaces") && args.includes("export")) {
-  await sleep(100);
-  if (args.includes("fail-skill")) {
-    console.error(JSON.stringify({ ok: false, error: "skill not found: fail-skill" }));
-    process.exit(1);
-  }
-  const workspaceId = args.at(-3);
-  const skillRef = args.at(-2);
-  const agent = args.at(-1);
-  const targetPath = path.join(${JSON.stringify(projectPath)}, ".codex", "skills", "alpha-skill");
-  mkdirSync(targetPath, { recursive: true });
-  writeFileSync(path.join(targetPath, "SKILL.md"), "# Alpha\\n", "utf8");
-  console.log(JSON.stringify({ args, ok: true, skill_id: skillRef, project_id: workspaceId, targets: [{ agent, target_path: targetPath }] }));
-  process.exit(0);
+    `#!/bin/sh
+has_arg() {
+  needle=$1
+  shift
+  for arg in "$@"; do
+    [ "$arg" = "$needle" ] && return 0
+  done
+  return 1
 }
-if (args.includes("workspaces") && args.includes("delete-skill")) {
-  await sleep(100);
-  const workspaceId = args.at(-3);
-  const agent = args.at(-2);
-  const relativePath = args.at(-1);
-  const targetPath = path.join(${JSON.stringify(projectPath)}, ".codex", "skills", relativePath);
-  rmSync(targetPath, { recursive: true, force: true });
-  console.log(JSON.stringify({ args, ok: true, project_id: workspaceId, agent, target_path: targetPath }));
-  process.exit(0);
+json_escape() {
+  printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'
 }
-if (args.includes("workspaces") && args.includes("list")) {
-  console.log(JSON.stringify([{
-    id: "project-1",
-    name: "Project",
-    path: ${JSON.stringify(projectPath)},
-    workspace_type: "project",
-    linked_agent_name: null,
-    supports_skill_toggle: true,
-    sort_order: 0,
-    skill_count: 0,
-    sync_health: { in_sync: 0, project_newer: 0, center_newer: 0, diverged: 0, project_only: 0 },
-    created_at: 1,
-    updated_at: 1
-  }]));
-  process.exit(0);
+print_args() {
+  printf '{"args":['
+  sep=''
+  for arg in "$@"; do
+    escaped=$(json_escape "$arg")
+    printf '%s"%s"' "$sep" "$escaped"
+    sep=','
+  done
+  printf ']}\\n'
 }
-if (args.includes("repo") && args.includes("status")) {
-  console.log(JSON.stringify({
-    db_path: ${JSON.stringify(dbPath)},
-    metadata_dir: ${JSON.stringify(metadataDir)}
-  }));
-  process.exit(0);
+last_arg() {
+  last=''
+  for arg in "$@"; do last="$arg"; done
+  printf '%s' "$last"
 }
-if (args.includes("tools") && args.includes("list")) {
-  console.log(JSON.stringify([{
-    key: "codex",
-    display_name: "Codex",
-    installed: true,
-    skills_dir: ${JSON.stringify(codexSkillsDir)},
-    enabled: true,
-    is_custom: false,
-    project_relative_skills_dir: ".codex/skills"
-  }]));
-  process.exit(0);
-}
-console.log(JSON.stringify({ args }));
+if has_arg workspaces "$@" && has_arg global "$@" && has_arg sync "$@"; then
+  sleep 0.1
+  if has_arg fail-skill "$@"; then
+    printf '{"ok":false,"error":"skill not found: fail-skill"}\\n' >&2
+    exit 1
+  fi
+  target_path=${JSON.stringify(codexSkillsDir + "/alpha")}
+  mkdir -p "$target_path"
+  printf '# Alpha\\n' > "$target_path/SKILL.md"
+  print_args "$@"
+  exit 0
+fi
+if has_arg workspaces "$@" && has_arg global "$@" && has_arg unsync "$@"; then
+  sleep 0.1
+  target_path=${JSON.stringify(codexSkillsDir + "/alpha")}
+  rm -rf "$target_path"
+  print_args "$@"
+  exit 0
+fi
+if has_arg workspaces "$@" && has_arg global "$@" && has_arg delete-skill "$@"; then
+  sleep 0.1
+  relative_path=$(last_arg "$@")
+  target_path=${JSON.stringify(codexSkillsDir)}"/$relative_path"
+  rm -rf "$target_path"
+  print_args "$@"
+  exit 0
+fi
+if has_arg workspaces "$@" && has_arg export "$@"; then
+  sleep 0.1
+  if has_arg fail-skill "$@"; then
+    printf '{"ok":false,"error":"skill not found: fail-skill"}\\n' >&2
+    exit 1
+  fi
+  target_path=${JSON.stringify(projectPath + "/.codex/skills/alpha-skill")}
+  mkdir -p "$target_path"
+  printf '# Alpha\\n' > "$target_path/SKILL.md"
+  print_args "$@"
+  exit 0
+fi
+if has_arg workspaces "$@" && has_arg delete-skill "$@"; then
+  sleep 0.1
+  relative_path=$(last_arg "$@")
+  target_path=${JSON.stringify(projectPath + "/.codex/skills")}"/$relative_path"
+  rm -rf "$target_path"
+  print_args "$@"
+  exit 0
+fi
+if has_arg workspaces "$@" && has_arg list "$@"; then
+  printf '%s\\n' '${JSON.stringify([
+    {
+      id: "project-1",
+      name: "Project",
+      path: projectPath,
+      workspace_type: "project",
+      linked_agent_name: null,
+      supports_skill_toggle: true,
+      sort_order: 0,
+      skill_count: 0,
+      sync_health: { in_sync: 0, project_newer: 0, center_newer: 0, diverged: 0, project_only: 0 },
+      created_at: 1,
+      updated_at: 1,
+    },
+  ])}'
+  exit 0
+fi
+if has_arg repo "$@" && has_arg status "$@"; then
+  printf '%s\\n' '${JSON.stringify({
+    db_path: dbPath,
+    metadata_dir: metadataDir,
+  })}'
+  exit 0
+fi
+if has_arg tools "$@" && has_arg list "$@"; then
+  printf '%s\\n' '${JSON.stringify([
+    {
+      key: "codex",
+      display_name: "Codex",
+      installed: true,
+      skills_dir: codexSkillsDir,
+      enabled: true,
+      is_custom: false,
+      project_relative_skills_dir: ".codex/skills",
+    },
+  ])}'
+  exit 0
+fi
+print_args "$@"
 `,
     { mode: 0o755 },
   );
@@ -864,54 +975,31 @@ describe("routes", () => {
     );
   });
 
-  it("syncs a managed skill into a global workspace before returning success", async () => {
+  it("queues global workspace sync and unsync through CLI-backed operations", async () => {
     const config = makeDbBackedCliConfig();
     const app = await createServer(config);
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/skills/alpha/sync-tool",
-      payload: { tool: "codex" },
-    });
-    await app.close();
+    const targetPath = path.join(config.dataDir, "codex-skills", "alpha");
 
-    expect(response.statusCode).toBe(200);
-    const targetPath = response.json().data.target_path;
-    expect(existsSync(path.join(targetPath, "SKILL.md"))).toBe(true);
-
-    const db = new DatabaseSync(path.join(config.dataDir, "skills-manager.db"));
-    try {
-      expect(db.prepare("SELECT tool, target_path, mode, status, source_hash FROM skill_targets WHERE skill_id = ?").get("alpha")).toEqual({
-        tool: "codex",
-        target_path: targetPath,
-        mode: "copy",
-        status: "ok",
-        source_hash: "hash-alpha",
-      });
-    } finally {
-      db.close();
-    }
-  });
-
-  it("unsyncs a managed skill from a global workspace before returning success", async () => {
-    const config = makeDbBackedCliConfig();
-    const app = await createServer(config);
     const syncResponse = await app.inject({
       method: "POST",
       url: "/api/skills/alpha/sync-tool",
       payload: { tool: "codex" },
     });
-    const targetPath = syncResponse.json().data.target_path;
-    expect(existsSync(path.join(targetPath, "SKILL.md"))).toBe(true);
 
-    const response = await app.inject({
-      method: "DELETE",
-      url: "/api/skills/alpha/sync-tool",
-      payload: { tool: "codex" },
-    });
-    await app.close();
-
-    expect(response.statusCode).toBe(200);
+    expect(syncResponse.statusCode).toBe(202);
+    expect(syncResponse.json().job.type).toBe("workspaces.global.sync");
     expect(existsSync(targetPath)).toBe(false);
+    const syncJob = await waitForJob(app, syncResponse.json().job.id, "succeeded");
+    expect(syncJob.status).toBe("succeeded");
+    expect(syncJob.result.args).toEqual([
+      "--json",
+      "workspaces",
+      "global",
+      "sync",
+      "codex",
+      "alpha",
+    ]);
+    expect(existsSync(path.join(targetPath, "SKILL.md"))).toBe(true);
 
     const db = new DatabaseSync(path.join(config.dataDir, "skills-manager.db"));
     try {
@@ -921,6 +1009,77 @@ describe("routes", () => {
     } finally {
       db.close();
     }
+
+    const unsyncResponse = await app.inject({
+      method: "DELETE",
+      url: "/api/skills/alpha/sync-tool",
+      payload: { tool: "codex" },
+    });
+
+    expect(unsyncResponse.statusCode).toBe(202);
+    expect(unsyncResponse.json().job.type).toBe("workspaces.global.unsync");
+    expect(existsSync(path.join(targetPath, "SKILL.md"))).toBe(true);
+    const unsyncJob = await waitForJob(app, unsyncResponse.json().job.id, "succeeded");
+    await app.close();
+
+    expect(unsyncJob.status).toBe("succeeded");
+    expect(unsyncJob.result.args).toEqual([
+      "--json",
+      "workspaces",
+      "global",
+      "unsync",
+      "codex",
+      "alpha",
+    ]);
+    expect(existsSync(targetPath)).toBe(false);
+  });
+
+  it("queues global workspace delete through CLI-backed operations", async () => {
+    const config = makeDbBackedCliConfig();
+    const targetPath = path.join(config.dataDir, "codex-skills", "local-only");
+    mkdirSync(targetPath, { recursive: true });
+    writeFileSync(path.join(targetPath, "SKILL.md"), "# Local Only\n", "utf8");
+    const app = await createServer(config);
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/workspaces/global/codex/skills/local-only",
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json().job.type).toBe("workspaces.global.delete-skill");
+    expect(existsSync(path.join(targetPath, "SKILL.md"))).toBe(true);
+    const job = await waitForJob(app, response.json().job.id, "succeeded");
+    await app.close();
+
+    expect(job.status).toBe("succeeded");
+    expect(job.result.args).toEqual([
+      "--json",
+      "workspaces",
+      "global",
+      "delete-skill",
+      "codex",
+      "local-only",
+    ]);
+    expect(existsSync(targetPath)).toBe(false);
+  });
+
+  it("records failed global workspace write jobs", async () => {
+    const config = makeDbBackedCliConfig();
+    const app = await createServer(config);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/skills/fail-skill/sync-tool",
+      payload: { tool: "codex" },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json().job.type).toBe("workspaces.global.sync");
+    const failed = await waitForJob(app, response.json().job.id, "failed");
+    await app.close();
+
+    expect(failed.status).toBe("failed");
+    expect(failed.error).toContain("skill not found: fail-skill");
   });
 
   it("queues project workspace export and delete through CLI-backed operations", async () => {

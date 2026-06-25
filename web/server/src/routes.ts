@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -109,22 +109,6 @@ interface CliPresetInfo {
 interface RepoStatusRecord {
   db_path: string;
   metadata_dir: string;
-}
-
-interface DbSkillRecord {
-  id: string;
-  name: string;
-  description: string | null;
-  central_path: string;
-  content_hash: string | null;
-}
-
-interface SyncWriteReport {
-  ok: true;
-  skill_id: string;
-  tool: string;
-  target_path: string;
-  mode: "copy";
 }
 
 interface DirectoryListing {
@@ -673,15 +657,6 @@ async function scanProjectDirectories(
   return results.sort();
 }
 
-async function removeTarget(target: string): Promise<void> {
-  await rm(target, { recursive: true, force: true });
-}
-
-function targetDirName(centralPath: string, skillName: string): string {
-  const base = path.basename(centralPath);
-  return base || skillName;
-}
-
 function workspaceSkillTargetPath(rootDir: string, relativePath: string): string {
   const normalizedRelativePath = path.normalize(relativePath);
   if (
@@ -696,172 +671,11 @@ function workspaceSkillTargetPath(rootDir: string, relativePath: string): string
   return targetPath;
 }
 
-async function removeWorkspaceSkill(rootDir: string, relativePath: string): Promise<string> {
-  const targetPath = workspaceSkillTargetPath(rootDir, relativePath);
-  const info = await stat(targetPath).catch(() => null);
-  if (!info?.isDirectory()) {
-    throw new Error("workspace skill not found");
-  }
-  await removeTarget(targetPath);
-  return targetPath;
-}
-
-async function copyDirRecursive(source: string, target: string): Promise<void> {
-  await mkdir(target, { recursive: true });
-  const entries = await readdir(source, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.name === ".git") continue;
-    const sourcePath = path.join(source, entry.name);
-    const targetPath = path.join(target, entry.name);
-    if (entry.isDirectory()) {
-      await copyDirRecursive(sourcePath, targetPath);
-    } else if (entry.isSymbolicLink()) {
-      continue;
-    } else if (entry.isFile()) {
-      await copyFile(sourcePath, targetPath);
-    }
-  }
-}
-
-async function copySkillDirectory(source: string, target: string): Promise<void> {
-  await removeTarget(target);
-  await copyDirRecursive(source, target);
-}
-
 function ensureTargetInsideRoot(target: string, root: string): void {
   const relative = path.relative(root, target);
   if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error("target path must stay inside workspace root");
   }
-}
-
-function isDbSkillRecord(value: unknown): value is DbSkillRecord {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    typeof value.name === "string" &&
-    (value.description === null || typeof value.description === "string") &&
-    typeof value.central_path === "string" &&
-    (value.content_hash === null || typeof value.content_hash === "string")
-  );
-}
-
-function readSkillFromDatabase(dbPath: string, skillId: string): DbSkillRecord {
-  const db = new DatabaseSync(dbPath);
-  try {
-    const row = db
-      .prepare("SELECT id, name, description, central_path, content_hash FROM skills WHERE id = ? OR name = ?")
-      .get(skillId, skillId);
-    if (!isDbSkillRecord(row)) {
-      throw new Error(`skill not found: ${skillId}`);
-    }
-    return row;
-  } finally {
-    db.close();
-  }
-}
-
-function readSkillTargetFromDatabase(dbPath: string, skillId: string, tool: string): string | null {
-  const db = new DatabaseSync(dbPath);
-  try {
-    const row = db
-      .prepare("SELECT target_path FROM skill_targets WHERE skill_id = ? AND tool = ?")
-      .get(skillId, tool);
-    if (!isRecord(row)) return null;
-    return typeof row.target_path === "string" ? row.target_path : null;
-  } finally {
-    db.close();
-  }
-}
-
-function deleteSkillTargetFromDatabase(dbPath: string, skillId: string, tool: string): void {
-  const db = new DatabaseSync(dbPath);
-  try {
-    db.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; BEGIN IMMEDIATE;");
-    try {
-      db
-        .prepare("DELETE FROM skill_targets WHERE skill_id = ? AND tool = ?")
-        .run(skillId, tool);
-      db.exec("COMMIT;");
-    } catch (error) {
-      db.exec("ROLLBACK;");
-      throw error;
-    }
-  } finally {
-    db.close();
-  }
-}
-
-function recordSkillTarget(dbPath: string, skill: DbSkillRecord, tool: string, targetPath: string): void {
-  const nowMs = Date.now();
-  const db = new DatabaseSync(dbPath);
-  try {
-    db.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; BEGIN IMMEDIATE;");
-    try {
-      db
-        .prepare(
-          "INSERT OR REPLACE INTO skill_targets (id, skill_id, tool, target_path, mode, status, synced_at, last_error, source_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .run(crypto.randomUUID(), skill.id, tool, targetPath, "copy", "ok", nowMs, null, skill.content_hash);
-      db.exec("COMMIT;");
-    } catch (error) {
-      db.exec("ROLLBACK;");
-      throw error;
-    }
-  } finally {
-    db.close();
-  }
-}
-
-async function syncSkillToToolCompat(
-  request: FastifyRequest,
-  ctx: RouteContext,
-  skillId: string,
-  toolKey: string,
-): Promise<SyncWriteReport> {
-  const [repoStatus, tools] = await Promise.all([
-    runAndRecord(request, ctx, ["repo", "status"], false),
-    readTools(request, ctx),
-  ]);
-  if (!isRepoStatusRecord(repoStatus)) {
-    throw new Error("repo status did not include db_path and metadata_dir");
-  }
-  const tool = tools.find((item) => item.key === toolKey);
-  if (!tool) throw new Error("agent not found");
-  if (!tool.installed) throw new Error(`${tool.display_name} is not installed`);
-  if (!tool.enabled) throw new Error(`${tool.display_name} is disabled`);
-
-  const skill = readSkillFromDatabase(repoStatus.db_path, skillId);
-  const targetPath = path.join(tool.skills_dir, targetDirName(skill.central_path, skill.name));
-  ensureTargetInsideRoot(targetPath, tool.skills_dir);
-  await copySkillDirectory(skill.central_path, targetPath);
-  recordSkillTarget(repoStatus.db_path, skill, tool.key, targetPath);
-  return { ok: true, skill_id: skill.id, tool: tool.key, target_path: targetPath, mode: "copy" };
-}
-
-async function unsyncSkillFromToolCompat(
-  request: FastifyRequest,
-  ctx: RouteContext,
-  skillId: string,
-  toolKey: string,
-): Promise<SyncWriteReport> {
-  const [repoStatus, tools] = await Promise.all([
-    runAndRecord(request, ctx, ["repo", "status"], false),
-    readTools(request, ctx),
-  ]);
-  if (!isRepoStatusRecord(repoStatus)) {
-    throw new Error("repo status did not include db_path and metadata_dir");
-  }
-  const tool = tools.find((item) => item.key === toolKey);
-  if (!tool) throw new Error("agent not found");
-
-  const skill = readSkillFromDatabase(repoStatus.db_path, skillId);
-  const recordedPath = readSkillTargetFromDatabase(repoStatus.db_path, skill.id, tool.key);
-  const targetPath = recordedPath ?? path.join(tool.skills_dir, targetDirName(skill.central_path, skill.name));
-  ensureTargetInsideRoot(targetPath, tool.skills_dir);
-  await removeTarget(targetPath);
-  deleteSkillTargetFromDatabase(repoStatus.db_path, skill.id, tool.key);
-  return { ok: true, skill_id: skill.id, tool: tool.key, target_path: targetPath, mode: "copy" };
 }
 
 function sendCli(reply: FastifyReply, result: Awaited<ReturnType<typeof runCli>>): void {
@@ -1026,14 +840,24 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
   app.post<{ Params: { ref: string } }>("/api/skills/:ref/sync-tool", async (request, reply) => {
     const ref = refParam(request.params.ref);
     const tool = nonEmptyString(asRecord(request.body).tool, "tool");
-    const report = await syncSkillToToolCompat(request, ctx, ref, tool);
-    reply.send({ ok: true, data: report });
+    enqueueJob(request, reply, ctx, "workspaces.global.sync", { skill: ref, tool }, [
+      "workspaces",
+      "global",
+      "sync",
+      tool,
+      ref,
+    ]);
   });
   app.delete<{ Params: { ref: string } }>("/api/skills/:ref/sync-tool", async (request, reply) => {
     const ref = refParam(request.params.ref);
     const tool = nonEmptyString(asRecord(request.body).tool, "tool");
-    const report = await unsyncSkillFromToolCompat(request, ctx, ref, tool);
-    reply.send({ ok: true, data: report });
+    enqueueJob(request, reply, ctx, "workspaces.global.unsync", { skill: ref, tool }, [
+      "workspaces",
+      "global",
+      "unsync",
+      tool,
+      ref,
+    ]);
   });
   app.post<{ Params: { ref: string } }>("/api/skills/:ref/export", (request, reply) => {
     const body = asRecord(request.body);
@@ -1260,19 +1084,13 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
     async (request, reply) => {
       const agentKey = refParam(request.params.agent);
       const relativePath = refParam(request.params.relativePath);
-      const tools = await readTools(request, ctx);
-      const tool = tools.find((item) => item.key === agentKey);
-      if (!tool) {
-        reply.code(404).send({ ok: false, error: "agent not found" });
-        return;
-      }
-      try {
-        const targetPath = await removeWorkspaceSkill(tool.skills_dir, relativePath);
-        reply.send({ ok: true, data: { agent: tool.key, target_path: targetPath } });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "failed to delete global workspace skill";
-        reply.code(message === "workspace skill not found" ? 404 : 400).send({ ok: false, error: message });
-      }
+      enqueueJob(request, reply, ctx, "workspaces.global.delete-skill", { agent: agentKey, relative_path: relativePath }, [
+        "workspaces",
+        "global",
+        "delete-skill",
+        agentKey,
+        relativePath,
+      ]);
     },
   );
 

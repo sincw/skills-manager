@@ -63,6 +63,22 @@ pub struct WorkspaceSkillDeleteReport {
     pub target_path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct GlobalWorkspaceSkillSyncReport {
+    pub ok: bool,
+    pub skill_id: String,
+    pub tool: String,
+    pub target_path: String,
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GlobalWorkspaceSkillDeleteReport {
+    pub ok: bool,
+    pub agent: String,
+    pub target_path: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct LegacyWorkspaceRegistry {
     projects: Vec<LegacyWorkspaceRecord>,
@@ -620,6 +636,103 @@ pub fn read_global_workspace_skill_document(
     })
 }
 
+pub fn sync_skill_to_global_workspace(
+    store: &SkillStore,
+    agent_key: &str,
+    skill_ref: &str,
+) -> Result<GlobalWorkspaceSkillSyncReport, AppError> {
+    let adapter = global_workspace_adapter_for_write(store, agent_key)?;
+    let skill = resolve_skill(store, skill_ref)?;
+    let source = PathBuf::from(&skill.central_path);
+    let root = adapter.skills_dir();
+    let target = root.join(sync_engine::target_dir_name(&source, &skill.name));
+    ensure_path_inside_root(&target, &root)?;
+    let configured_mode = store.get_setting("sync_mode").map_err(AppError::db)?;
+    let mode = sync_engine::sync_mode_for_tool(&adapter.key, configured_mode.as_deref());
+    let actual_mode = sync_engine::sync_skill(&source, &target, mode).map_err(AppError::io)?;
+    let now = chrono::Utc::now().timestamp_millis();
+    store
+        .insert_target(&SkillTargetRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            skill_id: skill.id.clone(),
+            tool: adapter.key.clone(),
+            target_path: target.to_string_lossy().to_string(),
+            mode: actual_mode.as_str().to_string(),
+            status: "ok".to_string(),
+            synced_at: Some(now),
+            last_error: None,
+            source_hash: skill.content_hash.clone(),
+        })
+        .map_err(AppError::db)?;
+
+    Ok(GlobalWorkspaceSkillSyncReport {
+        ok: true,
+        skill_id: skill.id,
+        tool: adapter.key,
+        target_path: target.to_string_lossy().to_string(),
+        mode: actual_mode.as_str().to_string(),
+    })
+}
+
+pub fn unsync_skill_from_global_workspace(
+    store: &SkillStore,
+    agent_key: &str,
+    skill_ref: &str,
+) -> Result<GlobalWorkspaceSkillSyncReport, AppError> {
+    let adapter = global_workspace_adapter_for_delete(store, agent_key)?;
+    let skill = resolve_skill(store, skill_ref)?;
+    let target = store
+        .get_targets_for_skill(&skill.id)
+        .map_err(AppError::db)?
+        .into_iter()
+        .find(|target| target.tool == adapter.key)
+        .ok_or_else(|| AppError::not_found("sync target not found"))?;
+    let target_path = PathBuf::from(&target.target_path);
+    ensure_path_inside_root(&target_path, &adapter.skills_dir())?;
+
+    store
+        .delete_target(&skill.id, &adapter.key)
+        .map_err(AppError::db)?;
+    remove_target_if_unreferenced(store, &target_path)?;
+
+    Ok(GlobalWorkspaceSkillSyncReport {
+        ok: true,
+        skill_id: skill.id,
+        tool: adapter.key,
+        target_path: target_path.to_string_lossy().to_string(),
+        mode: target.mode,
+    })
+}
+
+pub fn delete_global_workspace_skill(
+    store: &SkillStore,
+    agent_key: &str,
+    relative_path: &str,
+) -> Result<GlobalWorkspaceSkillDeleteReport, AppError> {
+    let adapter = global_workspace_adapter_for_delete(store, agent_key)?;
+    let root = adapter.skills_dir();
+    let target_path = workspace_skill_target_path(&root, relative_path)?;
+    if !target_path.is_dir() {
+        return Err(AppError::not_found("workspace skill not found"));
+    }
+    let managed = store
+        .get_all_targets()
+        .map_err(AppError::db)?
+        .into_iter()
+        .any(|target| Path::new(&target.target_path) == target_path);
+    if managed {
+        return Err(AppError::invalid_input(
+            "managed global workspace skill must be unsynced",
+        ));
+    }
+    sync_engine::remove_target(&target_path).map_err(AppError::io)?;
+    Ok(GlobalWorkspaceSkillDeleteReport {
+        ok: true,
+        agent: adapter.key,
+        target_path: target_path.to_string_lossy().to_string(),
+    })
+}
+
 fn enrich_workspace_skills(
     store: &SkillStore,
     agent_key: &str,
@@ -823,6 +936,46 @@ fn workspace_adapter_for_delete(
     Ok(adapter)
 }
 
+fn global_workspace_adapter_for_write(
+    store: &SkillStore,
+    tool_key: &str,
+) -> Result<tool_adapters::ToolAdapter, AppError> {
+    let adapter = global_workspace_adapter_for_delete(store, tool_key)?;
+    if !adapter.is_installed() {
+        return Err(AppError::invalid_input(format!(
+            "{} is not installed",
+            adapter.display_name
+        )));
+    }
+    if tool_service::disabled_tools_set(store).contains(&adapter.key) {
+        return Err(AppError::invalid_input(format!(
+            "{} is disabled",
+            adapter.display_name
+        )));
+    }
+    Ok(adapter)
+}
+
+fn global_workspace_adapter_for_delete(
+    store: &SkillStore,
+    tool_key: &str,
+) -> Result<tool_adapters::ToolAdapter, AppError> {
+    tool_adapters::find_adapter_with_store(store, tool_key)
+        .ok_or_else(|| AppError::not_found(format!("agent not found: {tool_key}")))
+}
+
+fn remove_target_if_unreferenced(store: &SkillStore, target_path: &Path) -> Result<(), AppError> {
+    let still_referenced = store
+        .get_all_targets()
+        .map_err(AppError::db)?
+        .into_iter()
+        .any(|target| Path::new(&target.target_path) == target_path);
+    if !still_referenced {
+        sync_engine::remove_target(target_path).map_err(AppError::io)?;
+    }
+    Ok(())
+}
+
 fn ensure_path_inside_root(target: &Path, root: &Path) -> Result<(), AppError> {
     if !target.starts_with(root) {
         return Err(AppError::invalid_input(
@@ -856,12 +1009,14 @@ fn slugify_skill_dir_name(name: &str) -> String {
 mod tests {
     use super::{
         add_registered_linked_workspace, add_registered_project_workspace,
-        delete_registered_workspace_skill, export_skill_to_registered_workspace,
-        import_legacy_workspace_registry, list_global_workspace_skills,
-        list_registered_workspace_agent_targets, list_registered_workspace_skills,
-        list_registered_workspaces, read_global_workspace_skill_document,
-        read_registered_workspace_skill_document, remove_registered_workspace,
-        reorder_registered_workspaces, scan_registered_workspace_candidates,
+        delete_global_workspace_skill, delete_registered_workspace_skill,
+        export_skill_to_registered_workspace, import_legacy_workspace_registry,
+        list_global_workspace_skills, list_registered_workspace_agent_targets,
+        list_registered_workspace_skills, list_registered_workspaces,
+        read_global_workspace_skill_document, read_registered_workspace_skill_document,
+        remove_registered_workspace, reorder_registered_workspaces,
+        scan_registered_workspace_candidates, sync_skill_to_global_workspace,
+        unsync_skill_from_global_workspace,
     };
     use crate::core::skill_store::{ProjectRecord, SkillRecord, SkillStore, SkillTargetRecord};
     use std::fs;
@@ -2041,5 +2196,300 @@ mod tests {
         assert!(err
             .to_string()
             .contains("relativePath must stay inside workspace"));
+    }
+
+    #[test]
+    fn syncing_skill_to_global_workspace_records_sync_managed_tool_target() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let center_skill = tmp.path().join("center").join("alpha");
+        let global_root = tmp.path().join("codex-global");
+        fs::create_dir_all(&center_skill).unwrap();
+        fs::create_dir_all(&global_root).unwrap();
+        fs::write(center_skill.join("SKILL.md"), "# Alpha\n").unwrap();
+        store
+            .set_setting(
+                "custom_tool_paths",
+                &serde_json::json!({"codex": global_root.to_string_lossy().to_string()})
+                    .to_string(),
+            )
+            .unwrap();
+        store.set_setting("sync_mode", "copy").unwrap();
+        store
+            .upsert_skill(&make_skill(
+                "skill-alpha",
+                "Alpha Skill",
+                center_skill.to_string_lossy().as_ref(),
+                None,
+                Some("hash-alpha"),
+                10,
+            ))
+            .unwrap();
+
+        let report = sync_skill_to_global_workspace(&store, "codex", "skill-alpha").unwrap();
+
+        let target = global_root.join("alpha");
+        assert_eq!(report.skill_id, "skill-alpha");
+        assert_eq!(report.tool, "codex");
+        assert_eq!(report.target_path, target.to_string_lossy().to_string());
+        assert_eq!(report.mode, "copy");
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            "# Alpha\n"
+        );
+        let targets = store.get_all_targets().unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].skill_id, "skill-alpha");
+        assert_eq!(targets[0].tool, "codex");
+        assert_eq!(targets[0].target_path, target.to_string_lossy().to_string());
+        assert_eq!(targets[0].source_hash.as_deref(), Some("hash-alpha"));
+    }
+
+    #[test]
+    fn unsyncing_global_workspace_skill_removes_managed_target_record() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let center_skill = tmp.path().join("center").join("alpha");
+        let global_root = tmp.path().join("codex-global");
+        fs::create_dir_all(&center_skill).unwrap();
+        fs::create_dir_all(&global_root).unwrap();
+        fs::write(center_skill.join("SKILL.md"), "# Alpha\n").unwrap();
+        store
+            .set_setting(
+                "custom_tool_paths",
+                &serde_json::json!({"codex": global_root.to_string_lossy().to_string()})
+                    .to_string(),
+            )
+            .unwrap();
+        store.set_setting("sync_mode", "copy").unwrap();
+        store
+            .upsert_skill(&make_skill(
+                "skill-alpha",
+                "Alpha Skill",
+                center_skill.to_string_lossy().as_ref(),
+                None,
+                Some("hash-alpha"),
+                10,
+            ))
+            .unwrap();
+        let sync = sync_skill_to_global_workspace(&store, "codex", "skill-alpha").unwrap();
+
+        let report = unsync_skill_from_global_workspace(&store, "codex", "skill-alpha").unwrap();
+
+        assert_eq!(report.skill_id, "skill-alpha");
+        assert_eq!(report.tool, "codex");
+        assert_eq!(report.target_path, sync.target_path);
+        assert!(!global_root.join("alpha").exists());
+        assert_eq!(store.get_all_targets().unwrap().len(), 0);
+        assert_eq!(store.get_all_skills().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deleting_unmanaged_global_workspace_skill_removes_only_local_copy() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let center_skill = tmp.path().join("center").join("alpha");
+        let global_root = tmp.path().join("codex-global");
+        let local_copy = global_root.join("local-only");
+        fs::create_dir_all(&center_skill).unwrap();
+        fs::create_dir_all(&local_copy).unwrap();
+        fs::write(center_skill.join("SKILL.md"), "# Center Alpha\n").unwrap();
+        fs::write(local_copy.join("SKILL.md"), "# Local Only\n").unwrap();
+        store
+            .set_setting(
+                "custom_tool_paths",
+                &serde_json::json!({"codex": global_root.to_string_lossy().to_string()})
+                    .to_string(),
+            )
+            .unwrap();
+        store
+            .upsert_skill(&make_skill(
+                "skill-alpha",
+                "Alpha Skill",
+                center_skill.to_string_lossy().as_ref(),
+                None,
+                Some("hash-alpha"),
+                10,
+            ))
+            .unwrap();
+
+        let report = delete_global_workspace_skill(&store, "codex", "local-only").unwrap();
+
+        assert_eq!(report.agent, "codex");
+        assert_eq!(report.target_path, local_copy.to_string_lossy().to_string());
+        assert!(!local_copy.exists());
+        assert!(center_skill.join("SKILL.md").exists());
+        assert_eq!(store.get_all_skills().unwrap().len(), 1);
+        assert_eq!(store.get_all_targets().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn unsyncing_global_workspace_skill_keeps_shared_target_path() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let center_alpha = tmp.path().join("center").join("alpha");
+        let center_beta = tmp.path().join("center").join("beta");
+        let global_root = tmp.path().join("codex-global");
+        let shared_target = global_root.join("shared");
+        fs::create_dir_all(&center_alpha).unwrap();
+        fs::create_dir_all(&center_beta).unwrap();
+        fs::create_dir_all(&shared_target).unwrap();
+        fs::write(center_alpha.join("SKILL.md"), "# Alpha\n").unwrap();
+        fs::write(center_beta.join("SKILL.md"), "# Beta\n").unwrap();
+        fs::write(shared_target.join("SKILL.md"), "# Shared\n").unwrap();
+        store
+            .set_setting(
+                "custom_tool_paths",
+                &serde_json::json!({"codex": global_root.to_string_lossy().to_string()})
+                    .to_string(),
+            )
+            .unwrap();
+        store
+            .upsert_skill(&make_skill(
+                "skill-alpha",
+                "Alpha Skill",
+                center_alpha.to_string_lossy().as_ref(),
+                None,
+                Some("hash-alpha"),
+                10,
+            ))
+            .unwrap();
+        store
+            .upsert_skill(&make_skill(
+                "skill-beta",
+                "Beta Skill",
+                center_beta.to_string_lossy().as_ref(),
+                None,
+                Some("hash-beta"),
+                10,
+            ))
+            .unwrap();
+        store
+            .insert_target(&SkillTargetRecord {
+                id: "target-alpha".to_string(),
+                skill_id: "skill-alpha".to_string(),
+                tool: "codex".to_string(),
+                target_path: shared_target.to_string_lossy().to_string(),
+                mode: "copy".to_string(),
+                status: "ok".to_string(),
+                synced_at: Some(20),
+                last_error: None,
+                source_hash: Some("hash-alpha".to_string()),
+            })
+            .unwrap();
+        store
+            .insert_target(&SkillTargetRecord {
+                id: "target-beta".to_string(),
+                skill_id: "skill-beta".to_string(),
+                tool: "custom".to_string(),
+                target_path: shared_target.to_string_lossy().to_string(),
+                mode: "copy".to_string(),
+                status: "ok".to_string(),
+                synced_at: Some(20),
+                last_error: None,
+                source_hash: Some("hash-beta".to_string()),
+            })
+            .unwrap();
+
+        let report = unsync_skill_from_global_workspace(&store, "codex", "skill-alpha").unwrap();
+
+        assert_eq!(
+            report.target_path,
+            shared_target.to_string_lossy().to_string()
+        );
+        assert!(shared_target.join("SKILL.md").exists());
+        let remaining = store.get_all_targets().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].skill_id, "skill-beta");
+    }
+
+    #[test]
+    fn deleting_global_workspace_skill_refuses_shared_managed_target_path() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let center_skill = tmp.path().join("center").join("alpha");
+        let global_root = tmp.path().join("codex-global");
+        let shared_target = global_root.join("shared");
+        fs::create_dir_all(&center_skill).unwrap();
+        fs::create_dir_all(&shared_target).unwrap();
+        fs::write(center_skill.join("SKILL.md"), "# Alpha\n").unwrap();
+        fs::write(shared_target.join("SKILL.md"), "# Shared\n").unwrap();
+        store
+            .set_setting(
+                "custom_tool_paths",
+                &serde_json::json!({"codex": global_root.to_string_lossy().to_string()})
+                    .to_string(),
+            )
+            .unwrap();
+        store
+            .upsert_skill(&make_skill(
+                "skill-alpha",
+                "Alpha Skill",
+                center_skill.to_string_lossy().as_ref(),
+                None,
+                Some("hash-alpha"),
+                10,
+            ))
+            .unwrap();
+        store
+            .insert_target(&SkillTargetRecord {
+                id: "target-alpha".to_string(),
+                skill_id: "skill-alpha".to_string(),
+                tool: "custom".to_string(),
+                target_path: shared_target.to_string_lossy().to_string(),
+                mode: "copy".to_string(),
+                status: "ok".to_string(),
+                synced_at: Some(20),
+                last_error: None,
+                source_hash: Some("hash-alpha".to_string()),
+            })
+            .unwrap();
+
+        let err = delete_global_workspace_skill(&store, "codex", "shared").unwrap_err();
+
+        assert_eq!(
+            err.message,
+            "managed global workspace skill must be unsynced"
+        );
+        assert!(shared_target.join("SKILL.md").exists());
+        assert_eq!(store.get_all_targets().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn global_workspace_writes_report_disabled_and_missing_tools() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let center_skill = tmp.path().join("center").join("alpha");
+        let global_root = tmp.path().join("codex-global");
+        fs::create_dir_all(&center_skill).unwrap();
+        fs::create_dir_all(&global_root).unwrap();
+        fs::write(center_skill.join("SKILL.md"), "# Alpha\n").unwrap();
+        store
+            .set_setting(
+                "custom_tool_paths",
+                &serde_json::json!({"codex": global_root.to_string_lossy().to_string()})
+                    .to_string(),
+            )
+            .unwrap();
+        store
+            .upsert_skill(&make_skill(
+                "skill-alpha",
+                "Alpha Skill",
+                center_skill.to_string_lossy().as_ref(),
+                None,
+                Some("hash-alpha"),
+                10,
+            ))
+            .unwrap();
+
+        let missing =
+            sync_skill_to_global_workspace(&store, "missing-tool", "skill-alpha").unwrap_err();
+        assert_eq!(missing.message, "agent not found: missing-tool");
+
+        store
+            .set_setting("disabled_tools", &serde_json::json!(["codex"]).to_string())
+            .unwrap();
+        let disabled = sync_skill_to_global_workspace(&store, "codex", "skill-alpha").unwrap_err();
+        assert_eq!(disabled.message, "Codex is disabled");
     }
 }

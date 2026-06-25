@@ -222,6 +222,16 @@ enum WorkspacesCommand {
         tool: String,
         relative_path: String,
     },
+    Export {
+        workspace_id: String,
+        skill_ref: String,
+        tools: Vec<String>,
+    },
+    DeleteSkill {
+        workspace_id: String,
+        tool: String,
+        relative_path: String,
+    },
     Global(GlobalWorkspaceArgs),
 }
 
@@ -623,6 +633,34 @@ fn run_workspaces(args: WorkspacesArgs, store: &SkillStore, json: bool) -> anyho
             )
             .map_err(map_app_err)?;
             print_json(&document, json);
+        }
+        WorkspacesCommand::Export {
+            workspace_id,
+            skill_ref,
+            tools,
+        } => {
+            let report = workspace_service::export_skill_to_registered_workspace(
+                store,
+                &workspace_id,
+                &skill_ref,
+                &tools,
+            )
+            .map_err(map_app_err)?;
+            print_json(&report, json);
+        }
+        WorkspacesCommand::DeleteSkill {
+            workspace_id,
+            tool,
+            relative_path,
+        } => {
+            let report = workspace_service::delete_registered_workspace_skill(
+                store,
+                &workspace_id,
+                &tool,
+                &relative_path,
+            )
+            .map_err(map_app_err)?;
+            print_json(&report, json);
         }
         WorkspacesCommand::Global(global) => run_global_workspace(global, store, json)?,
     }

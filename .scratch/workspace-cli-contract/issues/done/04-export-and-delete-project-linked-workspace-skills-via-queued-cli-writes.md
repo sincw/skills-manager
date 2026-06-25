@@ -30,3 +30,18 @@ Exports must remain conservative: an existing target directory is an error, not 
 ## Blocked by
 
 - .scratch/workspace-cli-contract/issues/03-move-workspace-registry-writes-into-rust-store.md
+
+## Comments
+
+### 2026-06-25 Completion
+
+Implemented Project Workspace and Linked Workspace Skill export/delete through the `workspaces` CLI contract and queued Web write jobs. Rust core now copies Workspace-local Skill exports conservatively, refuses existing targets, deletes only Workspace copies, validates missing/disabled/unsupported Tools, and leaves Sync-managed `skill_targets` untouched. Web Project Workspace export/delete routes keep their HTTP paths but enqueue `workspaces export` and `workspaces delete-skill` commands instead of using direct filesystem fallback.
+
+Verification:
+- `cargo fmt --manifest-path cli/Cargo.toml --check`
+- `cargo test --manifest-path cli/Cargo.toml`
+- `cd web && npm run test` (passed on rerun; the first parallel run with Rust tests timed out one pre-existing global sync route test under contention)
+- `cd web && npm run build --workspace server`
+- `cd web && npm run lint`
+
+Blockers: none. Next iteration can move Global Workspace sync/unsync/delete writes behind the queued CLI contract.

@@ -127,16 +127,6 @@ interface SyncWriteReport {
   mode: "copy";
 }
 
-interface ProjectExportReport {
-  ok: true;
-  skill_id: string;
-  project_id: string;
-  targets: Array<{
-    agent: string;
-    target_path: string;
-  }>;
-}
-
 interface DirectoryListing {
   path: string;
   parent: string | null;
@@ -596,14 +586,6 @@ async function readWorkspaceDocument(
   };
 }
 
-function projectSkillRoot(project: ProjectRegistryRecord, tool: CliToolInfo): string | null {
-  if (project.workspace_type === "linked") {
-    return project.path;
-  }
-  if (!tool.project_relative_skills_dir) return null;
-  return path.join(project.path, tool.project_relative_skills_dir);
-}
-
 async function directoryExists(dir: string): Promise<boolean> {
   const info = await stat(dir).catch(() => null);
   return info?.isDirectory() ?? false;
@@ -691,30 +673,13 @@ async function scanProjectDirectories(
   return results.sort();
 }
 
-function slugifySkillDirName(name: string): string {
-  let out = "";
-  let previousDash = false;
-  for (const char of name.toLowerCase()) {
-    const valid = /^[a-z0-9_.-]$/.test(char);
-    if (valid) {
-      out += char;
-      previousDash = false;
-    } else if (!previousDash) {
-      out += "-";
-      previousDash = true;
-    }
-  }
-  const trimmed = out.replace(/^[-_.]+|[-_.]+$/g, "");
-  return trimmed || "skill";
+async function removeTarget(target: string): Promise<void> {
+  await rm(target, { recursive: true, force: true });
 }
 
 function targetDirName(centralPath: string, skillName: string): string {
   const base = path.basename(centralPath);
   return base || skillName;
-}
-
-async function removeTarget(target: string): Promise<void> {
-  await rm(target, { recursive: true, force: true });
 }
 
 function workspaceSkillTargetPath(rootDir: string, relativePath: string): string {
@@ -897,46 +862,6 @@ async function unsyncSkillFromToolCompat(
   await removeTarget(targetPath);
   deleteSkillTargetFromDatabase(repoStatus.db_path, skill.id, tool.key);
   return { ok: true, skill_id: skill.id, tool: tool.key, target_path: targetPath, mode: "copy" };
-}
-
-async function exportSkillToProjectCompat(
-  request: FastifyRequest,
-  ctx: RouteContext,
-  project: ProjectRegistryRecord,
-  skillId: string,
-  agents: string[],
-): Promise<ProjectExportReport> {
-  if (agents.length === 0) throw new Error("agents must not be empty");
-  const [repoStatus, tools] = await Promise.all([
-    runAndRecord(request, ctx, ["repo", "status"], false),
-    readTools(request, ctx),
-  ]);
-  if (!isRepoStatusRecord(repoStatus)) {
-    throw new Error("repo status did not include db_path and metadata_dir");
-  }
-
-  const skill = readSkillFromDatabase(repoStatus.db_path, skillId);
-  const dirName = slugifySkillDirName(skill.name);
-  const toolByKey = new Map(tools.map((tool) => [tool.key, tool]));
-  const targets: ProjectExportReport["targets"] = [];
-
-  for (const agent of agents) {
-    const tool = toolByKey.get(agent);
-    if (!tool) throw new Error(`agent not found: ${agent}`);
-    if (!tool.installed) throw new Error(`${tool.display_name} is not installed`);
-    if (!tool.enabled) throw new Error(`${tool.display_name} is disabled`);
-    const root = projectSkillRoot(project, tool);
-    if (!root) throw new Error(`agent has no project skills path: ${agent}`);
-    const targetPath = path.join(root, dirName);
-    ensureTargetInsideRoot(targetPath, root);
-    if (await directoryExists(targetPath)) {
-      throw new Error(`Skill "${skill.name}" already exists in this workspace for agent ${agent}`);
-    }
-    await copySkillDirectory(skill.central_path, targetPath);
-    targets.push({ agent, target_path: targetPath });
-  }
-
-  return { ok: true, skill_id: skill.id, project_id: project.id, targets };
 }
 
 function sendCli(reply: FastifyReply, result: Awaited<ReturnType<typeof runCli>>): void {
@@ -1421,49 +1346,31 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
     directCli(request, reply, ctx, ["workspaces", "skills", refParam(request.params.id)]),
   );
   app.post<{ Params: { id: string } }>("/api/projects/:id/skills/export", async (request, reply) => {
-    const id = refParam(request.params.id);
     const body = asRecord(request.body);
     const skill = nonEmptyString(body.skill, "skill");
     const agents = stringArray(body.agents, "agents");
-    const projects = await readRegisteredWorkspaces(request, ctx);
-    const project = projects.find((item) => item.id === id);
-    if (!project) {
-      reply.code(404).send({ ok: false, error: "project not found" });
-      return;
-    }
-    const report = await exportSkillToProjectCompat(request, ctx, project, skill, agents);
-    reply.send({ ok: true, data: report });
+    const id = refParam(request.params.id);
+    enqueueJob(request, reply, ctx, "workspaces.export", { workspace_id: id, skill, tools: agents }, [
+      "workspaces",
+      "export",
+      id,
+      skill,
+      ...agents,
+    ]);
   });
   app.delete<{ Params: { id: string; agent: string; relativePath: string } }>(
     "/api/projects/:id/skills/:agent/:relativePath",
     async (request, reply) => {
       const id = refParam(request.params.id);
-      const agentKey = refParam(request.params.agent);
+      const agent = refParam(request.params.agent);
       const relativePath = refParam(request.params.relativePath);
-      const projects = await readRegisteredWorkspaces(request, ctx);
-      const project = projects.find((item) => item.id === id);
-      if (!project) {
-        reply.code(404).send({ ok: false, error: "project not found" });
-        return;
-      }
-      const tools = await readTools(request, ctx);
-      const tool = tools.find((item) => item.key === agentKey);
-      if (!tool) {
-        reply.code(404).send({ ok: false, error: "agent not found" });
-        return;
-      }
-      const rootDir = projectSkillRoot(project, tool);
-      if (!rootDir) {
-        reply.code(404).send({ ok: false, error: "project skill root not found" });
-        return;
-      }
-      try {
-        const targetPath = await removeWorkspaceSkill(rootDir, relativePath);
-        reply.send({ ok: true, data: { project_id: project.id, agent: tool.key, target_path: targetPath } });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "failed to delete project skill";
-        reply.code(message === "workspace skill not found" ? 404 : 400).send({ ok: false, error: message });
-      }
+      enqueueJob(request, reply, ctx, "workspaces.delete-skill", { workspace_id: id, tool: agent, relative_path: relativePath }, [
+        "workspaces",
+        "delete-skill",
+        id,
+        agent,
+        relativePath,
+      ]);
     },
   );
   app.get<{ Params: { id: string; agent: string; relativePath: string } }>(

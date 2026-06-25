@@ -173,6 +173,7 @@ function makeDbBackedCliConfig(): ServerConfig {
   const metadataDir = path.join(dir, "skills", ".skills-manager");
   const centralSkillDir = path.join(dir, "skills", "alpha");
   const codexSkillsDir = path.join(dir, "codex-skills");
+  const projectPath = path.join(dir, "project");
   mkdirSync(centralSkillDir, { recursive: true });
   mkdirSync(codexSkillsDir, { recursive: true });
   writeFileSync(path.join(centralSkillDir, "SKILL.md"), "# Alpha\n\nAlpha skill\n", "utf8");
@@ -214,12 +215,40 @@ function makeDbBackedCliConfig(): ServerConfig {
   writeFileSync(
     cli,
     `#!/usr/bin/env node
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 const args = process.argv.slice(2);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+if (args.includes("workspaces") && args.includes("export")) {
+  await sleep(100);
+  if (args.includes("fail-skill")) {
+    console.error(JSON.stringify({ ok: false, error: "skill not found: fail-skill" }));
+    process.exit(1);
+  }
+  const workspaceId = args.at(-3);
+  const skillRef = args.at(-2);
+  const agent = args.at(-1);
+  const targetPath = path.join(${JSON.stringify(projectPath)}, ".codex", "skills", "alpha-skill");
+  mkdirSync(targetPath, { recursive: true });
+  writeFileSync(path.join(targetPath, "SKILL.md"), "# Alpha\\n", "utf8");
+  console.log(JSON.stringify({ args, ok: true, skill_id: skillRef, project_id: workspaceId, targets: [{ agent, target_path: targetPath }] }));
+  process.exit(0);
+}
+if (args.includes("workspaces") && args.includes("delete-skill")) {
+  await sleep(100);
+  const workspaceId = args.at(-3);
+  const agent = args.at(-2);
+  const relativePath = args.at(-1);
+  const targetPath = path.join(${JSON.stringify(projectPath)}, ".codex", "skills", relativePath);
+  rmSync(targetPath, { recursive: true, force: true });
+  console.log(JSON.stringify({ args, ok: true, project_id: workspaceId, agent, target_path: targetPath }));
+  process.exit(0);
+}
 if (args.includes("workspaces") && args.includes("list")) {
   console.log(JSON.stringify([{
     id: "project-1",
     name: "Project",
-    path: ${JSON.stringify(path.join(dir, "project"))},
+    path: ${JSON.stringify(projectPath)},
     workspace_type: "project",
     linked_agent_name: null,
     supports_skill_toggle: true,
@@ -894,43 +923,70 @@ describe("routes", () => {
     }
   });
 
-  it("exports a managed skill into the selected project agent directory", async () => {
+  it("queues project workspace export and delete through CLI-backed operations", async () => {
     const config = makeDbBackedCliConfig();
     const projectPath = path.join(config.dataDir, "project");
-    const app = await createServer(config);
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/projects/project-1/skills/export",
-      payload: { skill: "alpha", agents: ["codex"] },
-    });
-    await app.close();
-
-    expect(response.statusCode).toBe(200);
-    const targetPath = response.json().data.targets[0].target_path;
-    expect(targetPath).toBe(path.join(projectPath, ".codex", "skills", "alpha-skill"));
-    expect(existsSync(path.join(targetPath, "SKILL.md"))).toBe(true);
-  });
-
-  it("deletes a project workspace skill from the selected agent directory", async () => {
-    const config = makeDbBackedCliConfig();
-    const projectPath = path.join(config.dataDir, "project");
-    const app = await createServer(config);
-    await app.inject({
-      method: "POST",
-      url: "/api/projects/project-1/skills/export",
-      payload: { skill: "alpha", agents: ["codex"] },
-    });
-
     const targetPath = path.join(projectPath, ".codex", "skills", "alpha-skill");
+    const app = await createServer(config);
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: "/api/projects/project-1/skills/export",
+      payload: { skill: "alpha", agents: ["codex"] },
+    });
+
+    expect(exportResponse.statusCode).toBe(202);
+    expect(exportResponse.json().job.type).toBe("workspaces.export");
+    expect(existsSync(targetPath)).toBe(false);
+    const exportJob = await waitForJob(app, exportResponse.json().job.id, "succeeded");
+    expect(exportJob.status).toBe("succeeded");
+    expect(exportJob.result.args).toEqual([
+      "--json",
+      "workspaces",
+      "export",
+      "project-1",
+      "alpha",
+      "codex",
+    ]);
     expect(existsSync(path.join(targetPath, "SKILL.md"))).toBe(true);
 
-    const response = await app.inject({
+    const deleteResponse = await app.inject({
       method: "DELETE",
       url: "/api/projects/project-1/skills/codex/alpha-skill",
     });
+
+    expect(deleteResponse.statusCode).toBe(202);
+    expect(deleteResponse.json().job.type).toBe("workspaces.delete-skill");
+    expect(existsSync(targetPath)).toBe(true);
+    const deleteJob = await waitForJob(app, deleteResponse.json().job.id, "succeeded");
     await app.close();
 
-    expect(response.statusCode).toBe(200);
+    expect(deleteJob.status).toBe("succeeded");
+    expect(deleteJob.result.args).toEqual([
+      "--json",
+      "workspaces",
+      "delete-skill",
+      "project-1",
+      "codex",
+      "alpha-skill",
+    ]);
     expect(existsSync(targetPath)).toBe(false);
+  });
+
+  it("records failed project workspace export jobs", async () => {
+    const config = makeDbBackedCliConfig();
+    const app = await createServer(config);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/projects/project-1/skills/export",
+      payload: { skill: "fail-skill", agents: ["codex"] },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json().job.type).toBe("workspaces.export");
+    const failed = await waitForJob(app, response.json().job.id, "failed");
+    await app.close();
+
+    expect(failed.status).toBe("failed");
+    expect(failed.error).toContain("skill not found: fail-skill");
   });
 });

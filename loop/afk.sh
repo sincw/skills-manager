@@ -56,6 +56,7 @@ for ((i=1; i<=iterations; i++)); do
   before_head=$(git rev-parse HEAD 2>/dev/null || echo "NO_HEAD")
 
   if ! codex exec -c approval_policy=never \
+    -c 'model_reasoning_effort="high"' \
     --output-last-message "$tmpfile" \
     "Previous commits:
 $commits

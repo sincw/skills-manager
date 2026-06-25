@@ -25,15 +25,15 @@ A named reusable group of skills that can be applied to a workspace or set of to
 _Avoid_: Scenario
 
 **Global Workspace**:
-The per-tool skills area outside any single project.
+The per-tool skills area outside any single project. It exists because a Tool has a global skills location; it is not a user-registered workspace.
 _Avoid_: Library, central repository
 
 **Project Workspace**:
-A project-local skills area that applies only within one project.
+A project-local skills area that applies only within one project. It is a user-registered workspace.
 _Avoid_: Global workspace
 
 **Linked Workspace**:
-An external skills root managed as its own workspace rather than as a project-local or global workspace.
+An external skills root managed as its own workspace rather than as a project-local or global workspace. It is a user-registered workspace.
 _Avoid_: Project workspace
 
 **Install**:
@@ -41,7 +41,7 @@ The act of adding a skill to the Skill Library from a Skill Source. Installing a
 _Avoid_: Sync
 
 **Sync**:
-The act of making library skills available to tools or workspaces.
+The act of making library skills available to tools or workspaces. Sync-managed Tool targets are distinct from ordinary Skill copies that live in a Project Workspace or Linked Workspace.
 _Avoid_: Install
 
 **Adopt**:

@@ -903,6 +903,22 @@ describe("routes", () => {
     );
   });
 
+  it("returns an empty leaderboard when skills.sh fetch times out", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+    );
+    const app = await createServer(makeConfig());
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/skills/leaderboard?board=trending",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, data: [] });
+  });
+
   it("creates presets through the CLI create command", async () => {
     const app = await createServer(makeConfig());
     const response = await app.inject({

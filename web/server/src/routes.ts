@@ -572,8 +572,13 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
   });
   app.get("/api/skills/leaderboard", async (request, reply) => {
     const board = normalizeBoard((request.query as Record<string, unknown>).board);
-    const skills = await fetchLeaderboardSkills(board, leaderboardCache);
-    reply.send({ ok: true, data: skills });
+    try {
+      const skills = await fetchLeaderboardSkills(board, leaderboardCache);
+      reply.send({ ok: true, data: skills });
+    } catch (error) {
+      request.log.warn({ err: error, board }, "Failed to fetch skills.sh leaderboard");
+      reply.send({ ok: true, data: [] });
+    }
   });
   app.post("/api/skills/adopt", (request, reply) => {
     const body = asRecord(request.body);

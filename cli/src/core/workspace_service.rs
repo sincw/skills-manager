@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -506,6 +507,11 @@ fn workspace_info(
             _ => sync_health.project_only += 1,
         }
     }
+    let skill_count = skills
+        .iter()
+        .map(|skill| skill.relative_path.to_lowercase())
+        .collect::<HashSet<_>>()
+        .len();
 
     RegisteredWorkspaceInfo {
         id: project.id.clone(),
@@ -515,7 +521,7 @@ fn workspace_info(
         linked_agent_name: project.linked_agent_name.clone(),
         supports_skill_toggle: project.workspace_type != "linked",
         sort_order: project.sort_order,
-        skill_count: skills.len(),
+        skill_count,
         sync_health,
         created_at: project.created_at,
         updated_at: project.updated_at,
@@ -1473,6 +1479,64 @@ mod tests {
         assert_eq!(health.center_newer, 1);
         assert_eq!(health.diverged, 1);
         assert_eq!(health.project_only, 1);
+    }
+
+    #[test]
+    fn registered_workspace_listing_counts_unique_relative_skill_paths_across_agents() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let workspace_root = tmp.path().join("workspace");
+        fs::create_dir_all(&workspace_root).unwrap();
+
+        store
+            .set_setting(
+                "custom_tool_paths",
+                &serde_json::json!({
+                    "codex": tmp.path().join("global-codex").to_string_lossy().to_string(),
+                    "claude_code": tmp.path().join("global-claude").to_string_lossy().to_string(),
+                    "cursor": tmp.path().join("global-cursor").to_string_lossy().to_string(),
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+        for (relative, name) in [
+            (".codex/skills/Shared", "Shared Codex"),
+            (".claude/skills/shared", "Shared Claude"),
+            (".cursor/skills/shared", "Shared Cursor"),
+            (".codex/skills/codex-only", "Codex Only"),
+        ] {
+            let skill_dir = workspace_root.join(relative);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(skill_dir.join("SKILL.md"), format!("---\nname: {name}\n---\n")).unwrap();
+        }
+
+        store
+            .insert_project(&make_project(
+                "project-1",
+                "Project",
+                workspace_root.to_string_lossy().as_ref(),
+                "project",
+                None,
+                None,
+                None,
+                0,
+                10,
+                20,
+            ))
+            .unwrap();
+
+        let skills = list_registered_workspace_skills(&store, "project-1").unwrap();
+        let unique_relative_paths = skills
+            .iter()
+            .map(|skill| skill.relative_path.to_lowercase())
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(skills.len(), 4);
+        assert_eq!(unique_relative_paths.len(), 2);
+
+        let workspaces = list_registered_workspaces(&store).unwrap();
+        assert_eq!(workspaces[0].skill_count, 2);
     }
 
     #[test]

@@ -190,6 +190,22 @@ struct WorkspacesArgs {
 #[derive(Subcommand, Debug)]
 enum WorkspacesCommand {
     List,
+    Add {
+        path: PathBuf,
+    },
+    AddLinked {
+        name: String,
+        path: PathBuf,
+    },
+    Reorder {
+        ids: Vec<String>,
+    },
+    Remove {
+        workspace_id: String,
+    },
+    ImportRegistry {
+        registry_path: PathBuf,
+    },
     Scan {
         root: PathBuf,
         #[arg(long, default_value_t = 3)]
@@ -551,6 +567,31 @@ fn run_workspaces(args: WorkspacesArgs, store: &SkillStore, json: bool) -> anyho
             let workspaces =
                 workspace_service::list_registered_workspaces(store).map_err(map_app_err)?;
             print_json(&workspaces, json);
+        }
+        WorkspacesCommand::Add { path } => {
+            let workspace = workspace_service::add_registered_project_workspace(store, &path)
+                .map_err(map_app_err)?;
+            print_json(&workspace, json);
+        }
+        WorkspacesCommand::AddLinked { name, path } => {
+            let workspace = workspace_service::add_registered_linked_workspace(store, &name, &path)
+                .map_err(map_app_err)?;
+            print_json(&workspace, json);
+        }
+        WorkspacesCommand::Reorder { ids } => {
+            let workspaces = workspace_service::reorder_registered_workspaces(store, &ids)
+                .map_err(map_app_err)?;
+            print_json(&workspaces, json);
+        }
+        WorkspacesCommand::Remove { workspace_id } => {
+            let removed = workspace_service::remove_registered_workspace(store, &workspace_id)
+                .map_err(map_app_err)?;
+            print_json(&removed, json);
+        }
+        WorkspacesCommand::ImportRegistry { registry_path } => {
+            let report = workspace_service::import_legacy_workspace_registry(store, &registry_path)
+                .map_err(map_app_err)?;
+            print_json(&report, json);
         }
         WorkspacesCommand::Scan { root, max_depth } => {
             let workspaces =

@@ -30,3 +30,7 @@ This slice also migrates the old Web Workspace registry data once. After success
 ## Blocked by
 
 - .scratch/workspace-cli-contract/issues/02-registered-workspace-reads-through-cli-seam.md
+
+## Completion note
+
+Implemented Project Workspace and Linked Workspace registry writes through the Rust store and `workspaces` CLI JSON contract. Web registry add, linked-add, reorder, remove, and legacy registry migration now route through CLI-backed operation jobs; the old `projects.json` registry is imported and renamed when encountered.

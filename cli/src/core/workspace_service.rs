@@ -1,6 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::{
     error::AppError,
@@ -38,6 +39,270 @@ pub struct WorkspaceSkillDocument {
     pub skill_name: String,
     pub filename: String,
     pub content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyWorkspaceRegistry {
+    projects: Vec<LegacyWorkspaceRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyWorkspaceRecord {
+    id: String,
+    name: String,
+    path: String,
+    workspace_type: String,
+    linked_agent_name: Option<String>,
+    sort_order: i32,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkspaceRegistryImportReport {
+    pub imported: Vec<RegisteredWorkspaceInfo>,
+    pub skipped: Vec<RegisteredWorkspaceInfo>,
+    pub backup_path: String,
+}
+
+pub fn add_registered_project_workspace(
+    store: &SkillStore,
+    path: &Path,
+) -> Result<RegisteredWorkspaceInfo, AppError> {
+    let path = normalize_workspace_path(path)?;
+    let name = default_workspace_name(&path);
+    add_registered_workspace(store, "project", &name, &path, None, None, None, None)
+}
+
+pub fn add_registered_linked_workspace(
+    store: &SkillStore,
+    name: &str,
+    path: &Path,
+) -> Result<RegisteredWorkspaceInfo, AppError> {
+    let path = normalize_workspace_path(path)?;
+    let name = validate_workspace_name(name)?;
+    add_registered_workspace(
+        store,
+        "linked",
+        &name,
+        &path,
+        Some("linked".to_string()),
+        Some(name.clone()),
+        None,
+        None,
+    )
+}
+
+pub fn reorder_registered_workspaces(
+    store: &SkillStore,
+    ids: &[String],
+) -> Result<Vec<RegisteredWorkspaceInfo>, AppError> {
+    let projects = store.get_all_projects().map_err(AppError::db)?;
+    let mut ordered_ids = Vec::with_capacity(projects.len());
+    for id in ids {
+        if projects.iter().any(|project| project.id == *id) && !ordered_ids.contains(id) {
+            ordered_ids.push(id.clone());
+        }
+    }
+    for project in projects {
+        if !ordered_ids.contains(&project.id) {
+            ordered_ids.push(project.id);
+        }
+    }
+    store.reorder_projects(&ordered_ids).map_err(AppError::db)?;
+    list_registered_workspaces(store)
+}
+
+pub fn remove_registered_workspace(store: &SkillStore, id: &str) -> Result<bool, AppError> {
+    if store.get_project_by_id(id).map_err(AppError::db)?.is_none() {
+        return Err(AppError::not_found("workspace not found"));
+    }
+    store.delete_project(id).map_err(AppError::db)?;
+    Ok(true)
+}
+
+pub fn import_legacy_workspace_registry(
+    store: &SkillStore,
+    registry_path: &Path,
+) -> Result<WorkspaceRegistryImportReport, AppError> {
+    if !registry_path.exists() {
+        return Err(AppError::not_found("legacy workspace registry not found"));
+    }
+    let raw = std::fs::read_to_string(registry_path).map_err(AppError::io)?;
+    let registry: LegacyWorkspaceRegistry = serde_json::from_str(&raw).map_err(|error| {
+        AppError::invalid_input(format!("invalid legacy workspace registry: {error}"))
+    })?;
+    let mut imported = Vec::new();
+    let mut skipped = Vec::new();
+
+    for legacy in registry.projects {
+        if legacy.workspace_type != "project" && legacy.workspace_type != "linked" {
+            continue;
+        }
+        let path = normalize_workspace_path(Path::new(&legacy.path))?;
+        let name = validate_workspace_name(&legacy.name)?;
+        let existing_by_id = store.get_project_by_id(&legacy.id).map_err(AppError::db)?;
+        let existed = existing_by_id.is_some() || find_workspace_by_path(store, &path)?.is_some();
+        let workspace = add_registered_workspace(
+            store,
+            &legacy.workspace_type,
+            &name,
+            &path,
+            if legacy.workspace_type == "linked" {
+                Some("linked".to_string())
+            } else {
+                None
+            },
+            legacy.linked_agent_name.clone(),
+            Some(legacy.id),
+            Some((legacy.sort_order, legacy.created_at, legacy.updated_at)),
+        )?;
+        if existed {
+            skipped.push(workspace);
+        } else {
+            imported.push(workspace);
+        }
+    }
+
+    let backup_path = migrated_backup_path(registry_path);
+    std::fs::rename(registry_path, &backup_path).map_err(AppError::io)?;
+    Ok(WorkspaceRegistryImportReport {
+        imported,
+        skipped,
+        backup_path: backup_path.to_string_lossy().to_string(),
+    })
+}
+
+fn add_registered_workspace(
+    store: &SkillStore,
+    workspace_type: &str,
+    name: &str,
+    path: &str,
+    linked_agent_key: Option<String>,
+    linked_agent_name: Option<String>,
+    id: Option<String>,
+    imported_order: Option<(i32, i64, i64)>,
+) -> Result<RegisteredWorkspaceInfo, AppError> {
+    if let Some(existing) = find_workspace_by_path(store, path)? {
+        return registered_workspace_info(store, &existing);
+    }
+    if let Some(existing_id) = id.as_deref() {
+        if let Some(existing) = store.get_project_by_id(existing_id).map_err(AppError::db)? {
+            return registered_workspace_info(store, &existing);
+        }
+    }
+    let projects = store.get_all_projects().map_err(AppError::db)?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let (sort_order, created_at, updated_at) =
+        imported_order.unwrap_or((projects.len() as i32, now, now));
+    let project = ProjectRecord {
+        id: id.unwrap_or_else(|| stable_workspace_id(workspace_type, path, name)),
+        name: name.to_string(),
+        path: path.to_string(),
+        workspace_type: workspace_type.to_string(),
+        linked_agent_key,
+        linked_agent_name,
+        disabled_path: None,
+        sort_order,
+        created_at,
+        updated_at,
+    };
+    store.insert_project(&project).map_err(AppError::db)?;
+    registered_workspace_info(store, &project)
+}
+
+fn registered_workspace_info(
+    store: &SkillStore,
+    project: &ProjectRecord,
+) -> Result<RegisteredWorkspaceInfo, AppError> {
+    let skills = read_registered_workspace_skills(store, project)?;
+    let skills = enrich_registered_workspace_skills(store, skills)?;
+    Ok(workspace_info(project, skills))
+}
+
+fn find_workspace_by_path(
+    store: &SkillStore,
+    path: &str,
+) -> Result<Option<ProjectRecord>, AppError> {
+    Ok(store
+        .get_all_projects()
+        .map_err(AppError::db)?
+        .into_iter()
+        .find(|project| project.path == path))
+}
+
+fn normalize_workspace_path(path: &Path) -> Result<String, AppError> {
+    let value = path.to_string_lossy().trim().to_string();
+    if value.is_empty() {
+        return Err(AppError::invalid_input("path is required"));
+    }
+    let expanded = if value == "~" {
+        dirs::home_dir().ok_or_else(|| AppError::invalid_input("home directory not found"))?
+    } else if value.starts_with("~/") || value.starts_with("~\\") {
+        dirs::home_dir()
+            .ok_or_else(|| AppError::invalid_input("home directory not found"))?
+            .join(&value[2..])
+    } else {
+        PathBuf::from(value)
+    };
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .map_err(AppError::io)?
+            .join(expanded)
+    };
+    let normalized = absolute
+        .canonicalize()
+        .unwrap_or_else(|_| lexically_normalize(&absolute));
+    Ok(normalized.to_string_lossy().to_string())
+}
+
+fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn default_workspace_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn validate_workspace_name(name: &str) -> Result<String, AppError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::invalid_input("name is required"));
+    }
+    Ok(name.to_string())
+}
+
+fn stable_workspace_id(workspace_type: &str, path: &str, name: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(workspace_type.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(path.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(name.as_bytes());
+    let hash = hex::encode(hasher.finalize());
+    format!("workspace-{}", &hash[..16])
+}
+
+fn migrated_backup_path(registry_path: &Path) -> PathBuf {
+    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+    registry_path.with_file_name(format!("projects.migrated-{timestamp}.json"))
 }
 
 pub fn list_registered_workspaces(
@@ -405,10 +670,12 @@ fn read_skill_document(skill_dir: &Path) -> Result<String, AppError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        list_global_workspace_skills, list_registered_workspace_agent_targets,
-        list_registered_workspace_skills, list_registered_workspaces,
-        read_global_workspace_skill_document, read_registered_workspace_skill_document,
-        scan_registered_workspace_candidates,
+        add_registered_linked_workspace, add_registered_project_workspace,
+        import_legacy_workspace_registry, list_global_workspace_skills,
+        list_registered_workspace_agent_targets, list_registered_workspace_skills,
+        list_registered_workspaces, read_global_workspace_skill_document,
+        read_registered_workspace_skill_document, remove_registered_workspace,
+        reorder_registered_workspaces, scan_registered_workspace_candidates,
     };
     use crate::core::skill_store::{ProjectRecord, SkillRecord, SkillStore};
     use std::fs;
@@ -515,6 +782,211 @@ mod tests {
         assert_eq!(workspaces[1].workspace_type, "linked");
         assert_eq!(workspaces[1].linked_agent_name.as_deref(), Some("Codex"));
         assert_eq!(workspaces[1].supports_skill_toggle, false);
+    }
+
+    #[test]
+    fn adding_project_workspace_persists_a_stable_registered_workspace() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let project_path = tmp.path().join("alpha-project");
+
+        let created = add_registered_project_workspace(&store, &project_path).unwrap();
+        let duplicate = add_registered_project_workspace(&store, &project_path).unwrap();
+        let workspaces = list_registered_workspaces(&store).unwrap();
+
+        assert_eq!(created.id, duplicate.id);
+        assert_eq!(created.name, "alpha-project");
+        assert_eq!(created.path, project_path.to_string_lossy());
+        assert_eq!(created.workspace_type, "project");
+        assert_eq!(created.supports_skill_toggle, true);
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].id, created.id);
+    }
+
+    #[test]
+    fn adding_project_workspace_collapses_equivalent_path_variants() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let project_path = tmp.path().join("alpha-project");
+        let variant = project_path.join("child").join("..").join(".");
+
+        let created = add_registered_project_workspace(&store, &project_path).unwrap();
+        let duplicate = add_registered_project_workspace(&store, &variant).unwrap();
+
+        assert_eq!(created.id, duplicate.id);
+        assert_eq!(list_registered_workspaces(&store).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn adding_linked_workspace_persists_linked_metadata_without_duplicates() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let linked_path = tmp.path().join("shared-skills");
+
+        let created =
+            add_registered_linked_workspace(&store, "Shared Skills", &linked_path).unwrap();
+        let duplicate =
+            add_registered_linked_workspace(&store, "Shared Skills", &linked_path).unwrap();
+        let stored = store.get_project_by_id(&created.id).unwrap().unwrap();
+
+        assert_eq!(created.id, duplicate.id);
+        assert_eq!(created.name, "Shared Skills");
+        assert_eq!(created.workspace_type, "linked");
+        assert_eq!(created.linked_agent_name.as_deref(), Some("Shared Skills"));
+        assert_eq!(created.supports_skill_toggle, false);
+        assert_eq!(stored.linked_agent_key.as_deref(), Some("linked"));
+        assert_eq!(list_registered_workspaces(&store).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn registered_workspaces_can_be_reordered_and_removed_by_stable_id() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let first = add_registered_project_workspace(&store, &tmp.path().join("first")).unwrap();
+        let second =
+            add_registered_linked_workspace(&store, "Second", &tmp.path().join("second")).unwrap();
+
+        let reordered =
+            reorder_registered_workspaces(&store, &[second.id.clone(), first.id.clone()]).unwrap();
+        let removed = remove_registered_workspace(&store, &second.id).unwrap();
+        let remaining = list_registered_workspaces(&store).unwrap();
+
+        assert_eq!(reordered[0].id, second.id);
+        assert_eq!(reordered[0].sort_order, 0);
+        assert_eq!(reordered[1].id, first.id);
+        assert_eq!(reordered[1].sort_order, 1);
+        assert!(removed);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, first.id);
+        assert!(remove_registered_workspace(&store, &second.id).is_err());
+    }
+
+    #[test]
+    fn importing_legacy_workspace_registry_preserves_ids_and_renames_backup() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let registry_path = tmp.path().join("projects.json");
+        fs::write(
+            &registry_path,
+            serde_json::json!({
+                "projects": [
+                    {
+                        "id": "web-project",
+                        "name": "Legacy Project",
+                        "path": "/workspace/legacy-project",
+                        "workspace_type": "project",
+                        "linked_agent_name": null,
+                        "supports_skill_toggle": true,
+                        "sort_order": 1,
+                        "skill_count": 0,
+                        "sync_health": {
+                            "in_sync": 0,
+                            "project_newer": 0,
+                            "center_newer": 0,
+                            "diverged": 0,
+                            "project_only": 0
+                        },
+                        "created_at": 10,
+                        "updated_at": 20
+                    },
+                    {
+                        "id": "web-linked",
+                        "name": "Legacy Linked",
+                        "path": "/workspace/legacy-linked",
+                        "workspace_type": "linked",
+                        "linked_agent_name": "Legacy Linked",
+                        "supports_skill_toggle": false,
+                        "sort_order": 2,
+                        "skill_count": 0,
+                        "sync_health": {
+                            "in_sync": 0,
+                            "project_newer": 0,
+                            "center_newer": 0,
+                            "diverged": 0,
+                            "project_only": 0
+                        },
+                        "created_at": 30,
+                        "updated_at": 40
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let report = import_legacy_workspace_registry(&store, &registry_path).unwrap();
+        let workspaces = list_registered_workspaces(&store).unwrap();
+
+        assert_eq!(report.imported.len(), 2);
+        assert_eq!(report.skipped.len(), 0);
+        assert!(!registry_path.exists());
+        assert!(std::path::Path::new(&report.backup_path).exists());
+        assert_eq!(workspaces[0].id, "web-project");
+        assert_eq!(workspaces[0].sort_order, 1);
+        assert_eq!(workspaces[1].id, "web-linked");
+        assert_eq!(
+            workspaces[1].linked_agent_name.as_deref(),
+            Some("Legacy Linked")
+        );
+    }
+
+    #[test]
+    fn importing_legacy_workspace_registry_skips_existing_store_records() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let registry_path = tmp.path().join("projects.json");
+        store
+            .insert_project(&make_project(
+                "web-project",
+                "Existing Project",
+                "/workspace/existing-project",
+                "project",
+                None,
+                None,
+                None,
+                0,
+                100,
+                200,
+            ))
+            .unwrap();
+        fs::write(
+            &registry_path,
+            serde_json::json!({
+                "projects": [
+                    {
+                        "id": "web-project",
+                        "name": "Legacy Project",
+                        "path": "/workspace/legacy-project",
+                        "workspace_type": "project",
+                        "linked_agent_name": null,
+                        "supports_skill_toggle": true,
+                        "sort_order": 1,
+                        "skill_count": 0,
+                        "sync_health": {
+                            "in_sync": 0,
+                            "project_newer": 0,
+                            "center_newer": 0,
+                            "diverged": 0,
+                            "project_only": 0
+                        },
+                        "created_at": 10,
+                        "updated_at": 20
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let report = import_legacy_workspace_registry(&store, &registry_path).unwrap();
+        let workspaces = list_registered_workspaces(&store).unwrap();
+
+        assert_eq!(report.imported.len(), 0);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].name, "Existing Project");
+        assert_eq!(workspaces[0].path, "/workspace/existing-project");
+        assert!(!registry_path.exists());
     }
 
     #[test]

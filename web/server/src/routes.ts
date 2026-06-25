@@ -4,7 +4,7 @@ import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs
 import { homedir } from "node:os";
 import path from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { JsonValue, ServerConfig } from "./types.js";
+import type { JobRecord, JsonValue, ServerConfig } from "./types.js";
 import { runCli } from "./cli.js";
 import { OperationsStore, WriteJobQueue } from "./operations.js";
 import {
@@ -45,10 +45,6 @@ interface ProjectRegistryRecord {
   };
   created_at: number;
   updated_at: number;
-}
-
-interface ProjectRegistryFile {
-  projects: ProjectRegistryRecord[];
 }
 
 interface CliToolInfo {
@@ -149,14 +145,6 @@ interface DirectoryListing {
     path: string;
   }>;
 }
-
-const EMPTY_SYNC_HEALTH: ProjectRegistryRecord["sync_health"] = {
-  in_sync: 0,
-  project_newer: 0,
-  center_newer: 0,
-  diverged: 0,
-  project_only: 0,
-};
 
 const LEADERBOARD_CACHE_TTL_MS = 5 * 60 * 1000;
 const LEADERBOARD_URLS: Record<LeaderboardBoard, string> = {
@@ -447,21 +435,6 @@ function projectRegistryPath(config: ServerConfig): string {
   return path.join(config.dataDir, "projects.json");
 }
 
-function stableProjectId(workspaceType: "project" | "linked", projectPath: string, name?: string): string {
-  const source = `${workspaceType}:${projectPath}:${name ?? ""}`;
-  let hash = 2166136261;
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `web-${(hash >>> 0).toString(36)}`;
-}
-
-function defaultProjectName(projectPath: string): string {
-  const base = path.basename(projectPath);
-  return base || projectPath;
-}
-
 function isProjectRegistryRecord(value: unknown): value is ProjectRegistryRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
@@ -479,30 +452,48 @@ function isProjectRegistryRecord(value: unknown): value is ProjectRegistryRecord
   );
 }
 
-async function readProjectRegistry(config: ServerConfig): Promise<ProjectRegistryRecord[]> {
-  try {
-    const raw = await readFile(projectRegistryPath(config), "utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-    const projects = (parsed as Partial<ProjectRegistryFile>).projects;
-    if (!Array.isArray(projects)) return [];
-    return projects.filter(isProjectRegistryRecord);
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
-    throw error;
+async function ensureWorkspaceRegistryMigrated(
+  request: FastifyRequest,
+  ctx: RouteContext,
+): Promise<void> {
+  const registryPath = projectRegistryPath(ctx.config);
+  const info = await stat(registryPath).catch(() => null);
+  if (!info?.isFile()) return;
+  const job = ctx.queue.enqueue(
+    "workspaces.import-registry",
+    { path: registryPath },
+    () => runAndRecord(request, ctx, ["workspaces", "import-registry", registryPath], true),
+  );
+  await waitForQueuedJob(ctx, job);
+}
+
+async function waitForQueuedJob(ctx: RouteContext, job: JobRecord): Promise<void> {
+  const started = Date.now();
+  while (job.status === "queued" || job.status === "running") {
+    if (Date.now() - started > 15 * 60 * 1000) {
+      throw new Error("workspace registry migration timed out");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const latest = ctx.operations.getJob(job.id);
+    if (latest) job = latest;
+  }
+  if (job.status === "failed") {
+    throw new Error(job.error ?? "workspace registry migration failed");
   }
 }
 
-async function writeProjectRegistry(config: ServerConfig, projects: ProjectRegistryRecord[]): Promise<void> {
-  await mkdir(config.dataDir, { recursive: true });
-  const normalized = projects
-    .map((project, index) => ({ ...project, sort_order: index }))
-    .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
-  await writeFile(
-    projectRegistryPath(config),
-    `${JSON.stringify({ projects: normalized }, null, 2)}\n`,
-    "utf8",
-  );
+async function readRegisteredWorkspaces(
+  request: FastifyRequest,
+  ctx: RouteContext,
+): Promise<ProjectRegistryRecord[]> {
+  await ensureWorkspaceRegistryMigrated(request, ctx);
+  const data = await runAndRecord(request, ctx, ["workspaces", "list"], false);
+  if (!Array.isArray(data)) return [];
+  const projects: ProjectRegistryRecord[] = [];
+  for (const item of data) {
+    if (isProjectRegistryRecord(item)) projects.push(item);
+  }
+  return projects;
 }
 
 async function loadToolTargets(
@@ -1379,80 +1370,49 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
     return directCli(request, reply, ctx, ["workspaces", "scan", root]);
   });
 
-  app.get("/api/projects", (request, reply) => directCli(request, reply, ctx, ["workspaces", "list"]));
-  app.post("/api/projects", async (request) => {
+  app.get("/api/projects", async (request, reply) => {
+    await ensureWorkspaceRegistryMigrated(request, ctx);
+    return directCli(request, reply, ctx, ["workspaces", "list"]);
+  });
+  app.post("/api/projects", async (request, reply) => {
     const body = asRecord(request.body);
     const projectPath = expandLinuxPath(nonEmptyString(body.path, "path"));
-    const projects = await readProjectRegistry(config);
-    const nowMs = Date.now();
-    const existing = projects.find((project) => project.path === projectPath && project.workspace_type === "project");
-    if (existing) return { ok: true, data: existing };
-    const project: ProjectRegistryRecord = {
-      id: stableProjectId("project", projectPath),
-      name: defaultProjectName(projectPath),
-      path: projectPath,
-      workspace_type: "project",
-      linked_agent_name: null,
-      supports_skill_toggle: true,
-      sort_order: projects.length,
-      skill_count: 0,
-      sync_health: { ...EMPTY_SYNC_HEALTH },
-      created_at: nowMs,
-      updated_at: nowMs,
-    };
-    const nextProjects = [...projects, project];
-    await writeProjectRegistry(config, nextProjects);
-    return { ok: true, data: project };
+    await ensureWorkspaceRegistryMigrated(request, ctx);
+    enqueueJob(request, reply, ctx, "workspaces.add", { path: projectPath }, [
+      "workspaces",
+      "add",
+      projectPath,
+    ]);
   });
-  app.post("/api/projects/linked", async (request) => {
+  app.post("/api/projects/linked", async (request, reply) => {
     const body = asRecord(request.body);
     const name = nonEmptyString(body.name, "name");
     const linkedPath = expandLinuxPath(nonEmptyString(body.path, "path"));
-    const projects = await readProjectRegistry(config);
-    const nowMs = Date.now();
-    const existing = projects.find((project) => project.path === linkedPath && project.workspace_type === "linked");
-    if (existing) return { ok: true, data: existing };
-    const project: ProjectRegistryRecord = {
-      id: stableProjectId("linked", linkedPath, name),
+    await ensureWorkspaceRegistryMigrated(request, ctx);
+    enqueueJob(request, reply, ctx, "workspaces.add-linked", { name, path: linkedPath }, [
+      "workspaces",
+      "add-linked",
       name,
-      path: linkedPath,
-      workspace_type: "linked",
-      linked_agent_name: name,
-      supports_skill_toggle: false,
-      sort_order: projects.length,
-      skill_count: 0,
-      sync_health: { ...EMPTY_SYNC_HEALTH },
-      created_at: nowMs,
-      updated_at: nowMs,
-    };
-    const nextProjects = [...projects, project];
-    await writeProjectRegistry(config, nextProjects);
-    return { ok: true, data: project };
+      linkedPath,
+    ]);
   });
-  app.post("/api/projects/reorder", async (request) => {
+  app.post("/api/projects/reorder", async (request, reply) => {
     const ids = stringArray(asRecord(request.body).ids, "ids");
-    const projects = await readProjectRegistry(config);
-    const byId = new Map(projects.map((project) => [project.id, project]));
-    const reordered = [
-      ...ids.flatMap((id) => {
-        const project = byId.get(id);
-        return project ? [project] : [];
-      }),
-      ...projects.filter((project) => !ids.includes(project.id)),
-    ];
-    await writeProjectRegistry(config, reordered);
-    return { ok: true, data: reordered };
+    await ensureWorkspaceRegistryMigrated(request, ctx);
+    enqueueJob(request, reply, ctx, "workspaces.reorder", { ids }, [
+      "workspaces",
+      "reorder",
+      ...ids,
+    ]);
   });
   app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
     const id = refParam(request.params.id);
-    const projects = await readProjectRegistry(config);
-    const nextProjects = projects.filter((project) => project.id !== id);
-    if (nextProjects.length === projects.length) {
-      reply.code(404).send({ ok: false, error: "project not found" });
-      return;
-    }
-    await writeProjectRegistry(config, nextProjects);
-    reply.send({ ok: true, data: true });
+    await ensureWorkspaceRegistryMigrated(request, ctx);
+    enqueueJob(request, reply, ctx, "workspaces.remove", { id }, [
+      "workspaces",
+      "remove",
+      id,
+    ]);
   });
   app.get<{ Params: { id: string } }>("/api/projects/:id/agent-targets", (request, reply) =>
     directCli(request, reply, ctx, ["workspaces", "agent-targets", refParam(request.params.id)]),
@@ -1465,7 +1425,7 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
     const body = asRecord(request.body);
     const skill = nonEmptyString(body.skill, "skill");
     const agents = stringArray(body.agents, "agents");
-    const projects = await readProjectRegistry(config);
+    const projects = await readRegisteredWorkspaces(request, ctx);
     const project = projects.find((item) => item.id === id);
     if (!project) {
       reply.code(404).send({ ok: false, error: "project not found" });
@@ -1480,7 +1440,7 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
       const id = refParam(request.params.id);
       const agentKey = refParam(request.params.agent);
       const relativePath = refParam(request.params.relativePath);
-      const projects = await readProjectRegistry(config);
+      const projects = await readRegisteredWorkspaces(request, ctx);
       const project = projects.find((item) => item.id === id);
       if (!project) {
         reply.code(404).send({ ok: false, error: "project not found" });

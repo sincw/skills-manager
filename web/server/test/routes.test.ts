@@ -16,10 +16,29 @@ function makeConfig(): ServerConfig {
   writeFileSync(
     cli,
     `#!/usr/bin/env node
+import { existsSync, renameSync } from "node:fs";
 const args = process.argv.slice(2);
-if (args.includes("remove") && !args.includes("--dry-run") && !args.includes("--yes")) {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+if (args.includes("skills") && args.includes("remove") && !args.includes("--dry-run") && !args.includes("--yes")) {
   console.error(JSON.stringify({ ok: false, error: "missing --yes" }));
   process.exit(1);
+}
+if (args.includes("workspaces") && args.includes("import-registry")) {
+  const registryPath = args.at(-1);
+  if (registryPath && existsSync(registryPath)) {
+    renameSync(registryPath, registryPath.replace(/projects\\.json$/, "projects.migrated-test.json"));
+  }
+  console.log(JSON.stringify({ args, imported: true }));
+  process.exit(0);
+}
+if (args.includes("workspaces") && ["add", "add-linked", "reorder", "remove"].some((command) => args.includes(command))) {
+  await sleep(100);
+  if (args.includes("remove") && args.includes("fail-workspace")) {
+    console.error(JSON.stringify({ ok: false, error: "workspace not found" }));
+    process.exit(1);
+  }
+  console.log(JSON.stringify({ args }));
+  process.exit(0);
 }
 if (args.includes("tools") && args.includes("list")) {
   console.log(JSON.stringify([{
@@ -196,6 +215,22 @@ function makeDbBackedCliConfig(): ServerConfig {
     cli,
     `#!/usr/bin/env node
 const args = process.argv.slice(2);
+if (args.includes("workspaces") && args.includes("list")) {
+  console.log(JSON.stringify([{
+    id: "project-1",
+    name: "Project",
+    path: ${JSON.stringify(path.join(dir, "project"))},
+    workspace_type: "project",
+    linked_agent_name: null,
+    supports_skill_toggle: true,
+    sort_order: 0,
+    skill_count: 0,
+    sync_health: { in_sync: 0, project_newer: 0, center_newer: 0, diverged: 0, project_only: 0 },
+    created_at: 1,
+    updated_at: 1
+  }]));
+  process.exit(0);
+}
 if (args.includes("repo") && args.includes("status")) {
   console.log(JSON.stringify({
     db_path: ${JSON.stringify(dbPath)},
@@ -229,6 +264,28 @@ console.log(JSON.stringify({ args }));
     auditLogPath: path.join(dir, "audit.jsonl"),
     commandLogPath: path.join(dir, "commands.jsonl"),
   };
+}
+
+async function waitForJob(app: Awaited<ReturnType<typeof createServer>>, id: string, status: string) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const response = await app.inject({ method: "GET", url: `/api/operations/jobs/${id}` });
+    const job = response.json().data;
+    if (job.status === status) return job;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const response = await app.inject({ method: "GET", url: `/api/operations/jobs/${id}` });
+  return response.json().data;
+}
+
+async function waitForAnyJobStatus(app: Awaited<ReturnType<typeof createServer>>, id: string, statuses: string[]) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const response = await app.inject({ method: "GET", url: `/api/operations/jobs/${id}` });
+    const job = response.json().data;
+    if (statuses.includes(job.status)) return job;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const response = await app.inject({ method: "GET", url: `/api/operations/jobs/${id}` });
+  return response.json().data;
 }
 
 describe("routes", () => {
@@ -303,16 +360,7 @@ describe("routes", () => {
 
   it("routes registered workspace reads through the workspaces CLI seam", async () => {
     const app = await createServer(makeConfig());
-
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/projects",
-      payload: { path: "/tmp/example-project" },
-    });
-    expect(created.statusCode).toBe(200);
-    const project = created.json().data;
-    expect(project.name).toBe("example-project");
-    expect(project.workspace_type).toBe("project");
+    const projectId = "project-1";
 
     const list = await app.inject({ method: "GET", url: "/api/projects" });
     expect(list.statusCode).toBe(200);
@@ -327,7 +375,7 @@ describe("routes", () => {
 
     const targets = await app.inject({
       method: "GET",
-      url: `/api/projects/${project.id}/agent-targets`,
+      url: `/api/projects/${projectId}/agent-targets`,
     });
     expect(targets.statusCode).toBe(200);
     expect(targets.json().data.args).toEqual([
@@ -336,12 +384,12 @@ describe("routes", () => {
       "/tmp/skills root",
       "workspaces",
       "agent-targets",
-      project.id,
+      projectId,
     ]);
 
     const skills = await app.inject({
       method: "GET",
-      url: `/api/projects/${project.id}/skills`,
+      url: `/api/projects/${projectId}/skills`,
     });
     expect(skills.statusCode).toBe(200);
     expect(skills.json().data.args).toEqual([
@@ -350,12 +398,12 @@ describe("routes", () => {
       "/tmp/skills root",
       "workspaces",
       "skills",
-      project.id,
+      projectId,
     ]);
 
     const document = await app.inject({
       method: "GET",
-      url: `/api/projects/${project.id}/skills/codex/research%2Falpha/document`,
+      url: `/api/projects/${projectId}/skills/codex/research%2Falpha/document`,
     });
     await app.close();
 
@@ -366,10 +414,145 @@ describe("routes", () => {
       "/tmp/skills root",
       "workspaces",
       "document",
-      project.id,
+      projectId,
       "codex",
       "research/alpha",
     ]);
+  });
+
+  it("queues registered workspace writes through CLI-backed operations", async () => {
+    const app = await createServer(makeConfig());
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { path: "/tmp/example-project" },
+    });
+    expect(created.statusCode).toBe(202);
+    expect(created.json().job.status).toBe("queued");
+    expect(created.json().job.type).toBe("workspaces.add");
+    const running = await waitForAnyJobStatus(app, created.json().job.id, ["running"]);
+    expect(running.status).toBe("running");
+
+    const linked = await app.inject({
+      method: "POST",
+      url: "/api/projects/linked",
+      payload: { name: "Shared Skills", path: "/tmp/shared-skills" },
+    });
+    const reordered = await app.inject({
+      method: "POST",
+      url: "/api/projects/reorder",
+      payload: { ids: ["linked-1", "project-1"] },
+    });
+    const removed = await app.inject({
+      method: "DELETE",
+      url: "/api/projects/project-1",
+    });
+
+    expect(linked.statusCode).toBe(202);
+    expect(linked.json().job.type).toBe("workspaces.add-linked");
+    expect(reordered.statusCode).toBe(202);
+    expect(reordered.json().job.type).toBe("workspaces.reorder");
+    expect(removed.statusCode).toBe(202);
+    expect(removed.json().job.type).toBe("workspaces.remove");
+
+    const createdJob = await waitForJob(app, created.json().job.id, "succeeded");
+    const removedJob = await waitForJob(app, removed.json().job.id, "succeeded");
+    expect(createdJob.status).toBe("succeeded");
+    expect(removedJob.status).toBe("succeeded");
+    expect(createdJob.result.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "add",
+      "/tmp/example-project",
+    ]);
+
+    const commands = await app.inject({ method: "GET", url: "/api/operations/commands" });
+    await app.close();
+
+    const commandArgs = commands.json().data.map((command: { command: string[] }) => command.command);
+    expect(commandArgs).toContainEqual([
+      path.join(dir, "fake-cli.mjs"),
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "add-linked",
+      "Shared Skills",
+      "/tmp/shared-skills",
+    ]);
+    expect(commandArgs).toContainEqual([
+      path.join(dir, "fake-cli.mjs"),
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "reorder",
+      "linked-1",
+      "project-1",
+    ]);
+    expect(commandArgs).toContainEqual([
+      path.join(dir, "fake-cli.mjs"),
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "remove",
+      "project-1",
+    ]);
+  });
+
+  it("records failed workspace registry write jobs", async () => {
+    const app = await createServer(makeConfig());
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/projects/fail-workspace",
+    });
+
+    expect(response.statusCode).toBe(202);
+    const failed = await waitForJob(app, response.json().job.id, "failed");
+    await app.close();
+
+    expect(failed.status).toBe("failed");
+    expect(failed.error).toContain("workspace not found");
+  });
+
+  it("imports and renames the legacy web workspace registry before registered workspace reads", async () => {
+    const config = makeConfig();
+    const registryPath = path.join(config.dataDir, "projects.json");
+    writeFileSync(registryPath, JSON.stringify({ projects: [] }), "utf8");
+    const app = await createServer(config);
+
+    const response = await app.inject({ method: "GET", url: "/api/projects" });
+    const commands = await app.inject({ method: "GET", url: "/api/operations/commands" });
+    const jobs = await app.inject({ method: "GET", url: "/api/operations/jobs" });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(existsSync(registryPath)).toBe(false);
+    expect(existsSync(path.join(config.dataDir, "projects.migrated-test.json"))).toBe(true);
+    const commandArgs = commands.json().data.map((command: { command: string[] }) => command.command);
+    expect(commandArgs).toContainEqual([
+      path.join(dir, "fake-cli.mjs"),
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "import-registry",
+      registryPath,
+    ]);
+    expect(commandArgs).toContainEqual([
+      path.join(dir, "fake-cli.mjs"),
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "list",
+    ]);
+    const importJob = jobs.json().data.find((job: { type: string }) => job.type === "workspaces.import-registry");
+    expect(importJob.status).toBe("succeeded");
   });
 
   it("browses local directories for browser-based path selection", async () => {
@@ -715,15 +898,9 @@ describe("routes", () => {
     const config = makeDbBackedCliConfig();
     const projectPath = path.join(config.dataDir, "project");
     const app = await createServer(config);
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/projects",
-      payload: { path: projectPath },
-    });
-    const project = created.json().data;
     const response = await app.inject({
       method: "POST",
-      url: `/api/projects/${project.id}/skills/export`,
+      url: "/api/projects/project-1/skills/export",
       payload: { skill: "alpha", agents: ["codex"] },
     });
     await app.close();
@@ -738,15 +915,9 @@ describe("routes", () => {
     const config = makeDbBackedCliConfig();
     const projectPath = path.join(config.dataDir, "project");
     const app = await createServer(config);
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/projects",
-      payload: { path: projectPath },
-    });
-    const project = created.json().data;
     await app.inject({
       method: "POST",
-      url: `/api/projects/${project.id}/skills/export`,
+      url: "/api/projects/project-1/skills/export",
       payload: { skill: "alpha", agents: ["codex"] },
     });
 
@@ -755,7 +926,7 @@ describe("routes", () => {
 
     const response = await app.inject({
       method: "DELETE",
-      url: `/api/projects/${project.id}/skills/codex/alpha-skill`,
+      url: "/api/projects/project-1/skills/codex/alpha-skill",
     });
     await app.close();
 

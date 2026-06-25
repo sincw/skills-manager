@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -455,6 +455,43 @@ describe("routes", () => {
     ]);
   });
 
+  it("reports workspace CLI capability in health", async () => {
+    const app = await createServer(makeConfig());
+    const response = await app.inject({ method: "GET", url: "/api/health" });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(
+      expect.objectContaining({
+        ok: true,
+        cli: expect.objectContaining({
+          workspaceCapable: true,
+          workspaceCapabilityError: null,
+          error: null,
+        }),
+      }),
+    );
+  });
+
+  it("keeps health available and reports missing workspace CLI capability", async () => {
+    const app = await createServer(makeMissingWorkspaceCliConfig());
+    const response = await app.inject({ method: "GET", url: "/api/health" });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(
+      expect.objectContaining({
+        ok: true,
+        cli: expect.objectContaining({
+          ready: true,
+          workspaceCapable: false,
+          workspaceCapabilityError: expect.stringContaining("Workspace CLI capability"),
+          error: expect.stringContaining("Workspace CLI capability"),
+        }),
+      }),
+    );
+  });
+
   it("requires remove dry-run before delete", async () => {
     const app = await createServer(makeConfig());
     const rejected = await app.inject({
@@ -659,7 +696,7 @@ describe("routes", () => {
     expect(failed.error).toContain("workspace not found");
   });
 
-  it("imports and renames the legacy web workspace registry before registered workspace reads", async () => {
+  it("does not import the legacy web workspace registry before registered workspace reads", async () => {
     const config = makeConfig();
     const registryPath = path.join(config.dataDir, "projects.json");
     writeFileSync(registryPath, JSON.stringify({ projects: [] }), "utf8");
@@ -671,18 +708,16 @@ describe("routes", () => {
     await app.close();
 
     expect(response.statusCode).toBe(200);
-    expect(existsSync(registryPath)).toBe(false);
-    expect(existsSync(path.join(config.dataDir, "projects.migrated-test.json"))).toBe(true);
-    const commandArgs = commands.json().data.map((command: { command: string[] }) => command.command);
-    expect(commandArgs).toContainEqual([
-      path.join(dir, "fake-cli.mjs"),
+    expect(existsSync(registryPath)).toBe(true);
+    expect(existsSync(path.join(config.dataDir, "projects.migrated-test.json"))).toBe(false);
+    expect(response.json().data.args).toEqual([
       "--json",
       "--skills-root",
       "/tmp/skills root",
       "workspaces",
-      "import-registry",
-      registryPath,
+      "list",
     ]);
+    const commandArgs = commands.json().data.map((command: { command: string[] }) => command.command);
     expect(commandArgs).toContainEqual([
       path.join(dir, "fake-cli.mjs"),
       "--json",
@@ -691,8 +726,8 @@ describe("routes", () => {
       "workspaces",
       "list",
     ]);
-    const importJob = jobs.json().data.find((job: { type: string }) => job.type === "workspaces.import-registry");
-    expect(importJob.status).toBe("succeeded");
+    expect(commandArgs.some((args: string[]) => args.includes("import-registry"))).toBe(false);
+    expect(jobs.json().data.some((job: { type: string }) => job.type === "workspaces.import-registry")).toBe(false);
   });
 
   it("browses local directories for browser-based path selection", async () => {
@@ -817,6 +852,24 @@ describe("routes", () => {
     expect(payload.data).toBeNull();
   });
 
+  it("rejects workspace writes when workspace CLI capability is missing without enqueueing jobs", async () => {
+    const config = makeMissingWorkspaceCliConfig();
+    const localSkill = path.join(config.dataDir, "codex-skills", "local-only", "SKILL.md");
+    const app = await createServer(config);
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/workspaces/global/codex/skills/local-only",
+    });
+    const jobs = await app.inject({ method: "GET", url: "/api/operations/jobs" });
+    await app.close();
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().ok).toBe(false);
+    expect(response.json().error).toContain("Workspace CLI capability");
+    expect(jobs.json().data).toEqual([]);
+    expect(existsSync(localSkill)).toBe(true);
+  });
+
   it("fetches skills.sh leaderboard pages instead of using CLI search wildcard", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
@@ -919,7 +972,7 @@ describe("routes", () => {
     ]);
   });
 
-  it("falls back to the repo database when installed CLI cannot create presets yet", async () => {
+  it("reports preset create CLI errors without falling back to database writes", async () => {
     const config = makeLegacyCliConfig();
     const app = await createServer(config);
     const response = await app.inject({
@@ -933,46 +986,19 @@ describe("routes", () => {
     });
     await app.close();
 
-    expect(response.statusCode).toBe(200);
-    const preset = response.json().data;
-    expect(preset).toEqual(
-      expect.objectContaining({
-        name: "Fallback",
-        description: "Created through compatibility path",
-        icon: "sparkles",
-        skill_count: 0,
-        active: true,
-      }),
-    );
+    expect(response.statusCode).toBe(500);
+    expect(response.json().ok).toBe(false);
+    expect(response.json().error).toContain("unrecognized subcommand");
 
     const db = new DatabaseSync(path.join(config.dataDir, "skills-manager.db"));
     try {
-      expect(
-        db.prepare("SELECT name, description, icon, created_at, updated_at FROM scenarios WHERE id = ?").get(preset.id),
-      ).toEqual({
-        name: "Fallback",
-        description: "Created through compatibility path",
-        icon: "sparkles",
-        created_at: preset.created_at,
-        updated_at: preset.updated_at,
-      });
-      expect(db.prepare("SELECT scenario_id FROM active_scenario WHERE key = 'current'").get()).toEqual({
-        scenario_id: preset.id,
-      });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM scenarios").get()).toEqual({ count: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM active_scenario").get()).toEqual({ count: 0 });
     } finally {
       db.close();
     }
 
-    const metadataPath = path.join(config.dataDir, "skills", ".skills-manager", "scenarios", `${preset.id}.json`);
-    expect(existsSync(metadataPath)).toBe(true);
-    expect(JSON.parse(readFileSync(metadataPath, "utf8"))).toEqual(
-      expect.objectContaining({
-        scenario_id: preset.id,
-        name: "Fallback",
-        description: "Created through compatibility path",
-        icon: "sparkles",
-      }),
-    );
+    expect(existsSync(path.join(config.dataDir, "skills", ".skills-manager", "scenarios"))).toBe(false);
   });
 
   it("queues global workspace sync and unsync through CLI-backed operations", async () => {

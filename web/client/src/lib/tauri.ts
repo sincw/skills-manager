@@ -406,6 +406,33 @@ function del<T>(url: string, body: unknown = {}): Promise<T> {
   });
 }
 
+function isActiveJob(job: WebJob): boolean {
+  return job.status === "queued" || job.status === "running";
+}
+
+async function waitForWebJobResult(job: WebJob): Promise<WebJob> {
+  const started = Date.now();
+  let current = job;
+  while (isActiveJob(current)) {
+    if (Date.now() - started > 15 * 60 * 1000) {
+      throw new Error(`Operation ${job.id} timed out`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    current = await getWebJob(job.id);
+  }
+  if (current.status === "failed") {
+    throw new Error(current.error ?? "Operation failed");
+  }
+  if (current.status === "canceled") {
+    throw new Error("Operation was canceled");
+  }
+  return current;
+}
+
+async function waitForQueuedWrite(jobPromise: Promise<WebJob>): Promise<WebJob> {
+  return waitForWebJobResult(await jobPromise);
+}
+
 function unsupported(feature: string): Promise<never> {
   return Promise.reject(new Error(`${feature} is not supported in the Web companion yet`));
 }
@@ -452,62 +479,6 @@ function normalizeSkill(skill: CliSkillSummary, presets: CliPreset[] = []): Mana
     preset_ids: Array.from(presetRefs),
     tags: skill.tags ?? [],
   };
-}
-
-function basename(input: string): string {
-  const normalized = input.replace(/\/+$/g, "");
-  return normalized.split("/").pop() ?? normalized;
-}
-
-function skillDirCandidates(skill: ManagedSkill): Set<string> {
-  const slug = skill.name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return new Set(
-    [skill.id, skill.name, basename(skill.central_path), slug]
-      .map((item) => item.trim().toLowerCase())
-      .filter(Boolean),
-  );
-}
-
-async function withInferredTargets(skills: ManagedSkill[]): Promise<ManagedSkill[]> {
-  if (skills.length === 0) return skills;
-  const tools = await getToolStatus().catch(() => []);
-  const installedTools = tools.filter((tool) => tool.installed && tool.enabled);
-  if (installedTools.length === 0) return skills;
-
-  const localSkillsByTool = await Promise.all(
-    installedTools.map(async (tool) => ({
-      tool,
-      skills: await getGlobalLocalSkills(tool.key).catch(() => []),
-    })),
-  );
-
-  return skills.map((skill) => {
-    if (skill.targets.length > 0) return skill;
-    const candidates = skillDirCandidates(skill);
-    const targets: SkillTarget[] = [];
-    for (const item of localSkillsByTool) {
-      const localSkill = item.skills.find((candidate) =>
-        candidates.has(candidate.relative_path.toLowerCase()) ||
-        candidates.has(candidate.dir_name.toLowerCase()) ||
-        candidates.has(candidate.name.toLowerCase()),
-      );
-      if (!localSkill) continue;
-      targets.push({
-        id: `${skill.id}:${item.tool.key}`,
-        skill_id: skill.id,
-        tool: item.tool.key,
-        target_path: localSkill.path,
-        mode: "copy",
-        status: "synced",
-        synced_at: null,
-      });
-    }
-    return targets.length > 0 ? { ...skill, targets } : skill;
-  });
 }
 
 function toProjectAgentTarget(tool: ToolInfo): ProjectAgentTarget {
@@ -612,7 +583,7 @@ export const getManagedSkills = async () => {
     get<CliSkillSummary[]>("/api/skills"),
     get<CliPreset[]>("/api/presets").catch(() => []),
   ]);
-  return withInferredTargets(skills.map((skill) => normalizeSkill(skill, presets)));
+  return skills.map((skill) => normalizeSkill(skill, presets));
 };
 
 export const getSkillsForPreset = async (presetId: string) => {
@@ -778,10 +749,10 @@ export const adoptGitSkill = (input: {
 
 // Sync
 export const syncSkillToTool = async (skillId: string, toolKey: string) => {
-  await post<unknown>(`/api/skills/${encodeRef(skillId)}/sync-tool`, { tool: toolKey });
+  await waitForQueuedWrite(post<WebJob>(`/api/skills/${encodeRef(skillId)}/sync-tool`, { tool: toolKey }));
 };
 export const unsyncSkillFromTool = async (skillId: string, toolKey: string) => {
-  await del<unknown>(`/api/skills/${encodeRef(skillId)}/sync-tool`, { tool: toolKey });
+  await waitForQueuedWrite(del<WebJob>(`/api/skills/${encodeRef(skillId)}/sync-tool`, { tool: toolKey }));
 };
 export const getSkillToolToggles = async (skillId: string, _presetId: string): Promise<SkillToolToggle[]> => {
   void _presetId;
@@ -933,7 +904,7 @@ export const removeSkillFromPreset = (skillId: string, presetId: string) =>
 export const reorderPresets = async (ids: string[]) => {
   ignoreArgs(ids);
 };
-export const reorderProjects = (ids: string[]) => post<Project[]>("/api/projects/reorder", { ids });
+export const reorderProjects = (ids: string[]) => waitForQueuedWrite(post<WebJob>("/api/projects/reorder", { ids }));
 export const getPresetSkillOrder = async (presetId: string) =>
   (await getSkillsForPreset(presetId)).map((skill) => skill.id);
 export const reorderPresetSkills = async (presetId: string, skillIds: string[]) => {
@@ -941,10 +912,11 @@ export const reorderPresetSkills = async (presetId: string, skillIds: string[]) 
 };
 
 export const getProjects = () => get<Project[]>("/api/projects");
-export const addProject = (path: string) => post<Project>("/api/projects", { path });
+export const addProject = (path: string) => waitForQueuedWrite(post<WebJob>("/api/projects", { path }));
 export const addLinkedWorkspace = (name: string, path: string) =>
-  post<Project>("/api/projects/linked", { name, path });
-export const removeProject = (id: string) => del<boolean>(`/api/projects/${encodeRef(id)}`);
+  waitForQueuedWrite(post<WebJob>("/api/projects/linked", { name, path }));
+export const removeProject = (id: string) =>
+  waitForQueuedWrite(del<WebJob>(`/api/projects/${encodeRef(id)}`));
 export const browseDirectories = (path?: string) => {
   const params = path?.trim()
     ? `?path=${encodeURIComponent(path.trim())}`
@@ -972,7 +944,9 @@ export const importProjectSkillToCenter = (projectId: string, relativePath: stri
   return unsupported("Project import");
 };
 export const exportSkillToProject = async (skillId: string, projectId: string, agents: string[]) => {
-  await post<unknown>(`/api/projects/${encodeRef(projectId)}/skills/export`, { skill: skillId, agents });
+  await waitForQueuedWrite(
+    post<WebJob>(`/api/projects/${encodeRef(projectId)}/skills/export`, { skill: skillId, agents }),
+  );
 };
 export const updateProjectSkillToCenter = (projectId: string, relativePath: string, agent: string) => {
   ignoreArgs(projectId, relativePath, agent);
@@ -992,9 +966,9 @@ export const toggleProjectSkill = (
   return unsupported("Project skill toggle");
 };
 export const deleteProjectSkill = async (projectId: string, relativePath: string, agent: string) => {
-  await del<unknown>(
+  await waitForQueuedWrite(del<WebJob>(
     `/api/projects/${encodeRef(projectId)}/skills/${encodeRef(agent)}/${encodeRef(relativePath)}`,
-  );
+  ));
 };
 export const slugifySkillNames = async (names: string[]) =>
   names.map((name) =>
@@ -1005,27 +979,8 @@ export const slugifySkillNames = async (names: string[]) =>
       .replace(/^-+|-+$/g, ""),
   );
 
-export const getGlobalLocalSkills = async (agentKey: string): Promise<ProjectSkill[]> => {
-  const [localSkills, centerSkills, presets] = await Promise.all([
-    get<ProjectSkill[]>(`/api/workspaces/global/${encodeRef(agentKey)}/skills`),
-    get<CliSkillSummary[]>("/api/skills").catch(() => []),
-    get<CliPreset[]>("/api/presets").catch(() => []),
-  ]);
-  const managed = centerSkills.map((skill) => normalizeSkill(skill, presets));
-  return localSkills.map((skill) => {
-    const centerSkill = managed.find((item) => skillDirCandidates(item).has(skill.relative_path.toLowerCase()));
-    return centerSkill
-      ? {
-          ...skill,
-          in_center: true,
-          sync_status: "in_sync",
-          center_skill_id: centerSkill.id,
-          tags: centerSkill.tags,
-          description: skill.description ?? centerSkill.description,
-        }
-      : skill;
-  });
-};
+export const getGlobalLocalSkills = (agentKey: string): Promise<ProjectSkill[]> =>
+  get<ProjectSkill[]>(`/api/workspaces/global/${encodeRef(agentKey)}/skills`);
 export const getGlobalLocalSkillDocument = (agentKey: string, relativePath: string) =>
   get<ProjectSkillDocument>(
     `/api/workspaces/global/${encodeRef(agentKey)}/skills/${encodeRef(relativePath)}/document`,
@@ -1039,9 +994,9 @@ export const updateGlobalLocalSkillFromCenter = (agentKey: string, relativePath:
   return unsupported("Global workspace update");
 };
 export const deleteGlobalLocalSkill = async (agentKey: string, relativePath: string) => {
-  await del<unknown>(
+  await waitForQueuedWrite(del<WebJob>(
     `/api/workspaces/global/${encodeRef(agentKey)}/skills/${encodeRef(relativePath)}`,
-  );
+  ));
 };
 
 export const previewPreset = (id: string) =>

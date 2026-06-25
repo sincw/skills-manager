@@ -18,13 +18,13 @@ Pick exactly one next task. Prioritize tasks in this order:
 
 1. Critical bugfixes
 2. Development infrastructure
-3. Tracer bullets for new features
+3. AFK-max packages for new features
 4. Polish and quick wins
 5. Refactors
 
 Development infrastructure like tests, types, and dev scripts is an important precursor to building features.
 
-Tracer bullets are small end-to-end slices through all layers of the system. Build a tiny, verifiable slice first, then expand later.
+An AFK-max package is one issue file and one commit: the largest coherent unit that can be completed safely in one loop. It may absorb multiple related tracer bullets when they share the same user path, code area, feedback loop, and rollback boundary.
 
 # EXPLORATION
 
@@ -35,10 +35,11 @@ Explore the repo before editing. Read `AGENTS.md`, `docs/agents/*`, relevant PRD
 Use `$implement` for the selected issue. Use `$tdd` where possible, at the public seams described by the issue or PRD.
 
 Only work on one task. Do not opportunistically complete adjacent issues.
+One task means one AFK-ready issue package, not one tracer bullet inside it.
 
 # FEEDBACK LOOPS
 
-Before committing, run the relevant feedback loops for this repo. Prefer the project's own scripts if present, such as:
+Before committing, run the relevant feedback loops for this repo. Start with any `Suggested verification` listed in the issue. Prefer the project's own scripts if present, such as:
 
 - tests
 - typecheck

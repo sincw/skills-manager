@@ -138,7 +138,10 @@ fn managed_skill_to_dto(
     }
 }
 
-pub fn managed_skill_by_id(store: &SkillStore, skill_id: &str) -> Result<ManagedSkillDto, AppError> {
+pub fn managed_skill_by_id(
+    store: &SkillStore,
+    skill_id: &str,
+) -> Result<ManagedSkillDto, AppError> {
     let skill = store
         .get_skill_by_id(skill_id)
         .map_err(AppError::db)?
@@ -334,7 +337,9 @@ pub fn reimport_local_skill_internal(
         .ok_or_else(|| AppError::not_found("Skill not found"))?;
 
     if !matches!(skill.source_type.as_str(), "local" | "import") {
-        return Err(AppError::invalid_input("Only local skills can be reimported"));
+        return Err(AppError::invalid_input(
+            "Only local skills can be reimported",
+        ));
     }
 
     let source_path = skill
@@ -950,7 +955,11 @@ mod tests {
         let dir = root.join(rel);
         fs::create_dir_all(&dir).unwrap();
         let basename = dir.file_name().unwrap().to_string_lossy().to_string();
-        fs::write(dir.join("SKILL.md"), format!("---\nname: {basename}\n---\n")).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {basename}\n---\n"),
+        )
+        .unwrap();
         dir
     }
 

@@ -153,7 +153,10 @@ pub fn get_custom_tools(store: &SkillStore) -> Vec<CustomToolDef> {
     tool_adapters::custom_tools(store)
 }
 
-pub fn set_custom_tools(store: &SkillStore, custom_tools: &[CustomToolDef]) -> Result<(), AppError> {
+pub fn set_custom_tools(
+    store: &SkillStore,
+    custom_tools: &[CustomToolDef],
+) -> Result<(), AppError> {
     let json = serde_json::to_string(custom_tools)
         .map_err(|e| AppError::internal(format!("Failed to serialize: {e}")))?;
     store
@@ -244,7 +247,8 @@ pub fn list_tool_info(store: &SkillStore) -> Vec<ToolInfo> {
     let all_keys: Vec<String> = infos.iter().map(|i| i.key.clone()).collect();
     let ordered_keys = merge_order(&saved, &all_keys);
 
-    let mut by_key: HashMap<String, ToolInfo> = infos.into_iter().map(|i| (i.key.clone(), i)).collect();
+    let mut by_key: HashMap<String, ToolInfo> =
+        infos.into_iter().map(|i| (i.key.clone(), i)).collect();
     ordered_keys
         .into_iter()
         .filter_map(|k| by_key.remove(&k))
@@ -328,7 +332,11 @@ pub fn migrate_legacy_tool_keys(store: &SkillStore) -> Result<(), AppError> {
         set_custom_tools(store, &normalized_customs)?;
     }
 
-    if changed || store.has_tool_key_references(OLD_KEY).map_err(AppError::db)? {
+    if changed
+        || store
+            .has_tool_key_references(OLD_KEY)
+            .map_err(AppError::db)?
+    {
         store
             .remap_tool_key_references(OLD_KEY, NEW_KEY)
             .map_err(AppError::db)?;
@@ -349,7 +357,14 @@ mod tests {
 
     #[test]
     fn fresh_install_uses_default_priority_order() {
-        let all = v(&["cursor", "claude_code", "codex", "grok", "gemini_cli", "opencode"]);
+        let all = v(&[
+            "cursor",
+            "claude_code",
+            "codex",
+            "grok",
+            "gemini_cli",
+            "opencode",
+        ]);
         let order = merge_order(&[], &all);
         // Priority list comes first, then remaining adapters in their natural order.
         assert_eq!(order[0], "claude_code");
@@ -361,7 +376,14 @@ mod tests {
     fn new_priority_agent_slots_after_its_predecessor() {
         // Existing user whose saved order predates `grok`.
         let saved = v(&["claude_code", "codex", "gemini_cli", "cursor", "opencode"]);
-        let all = v(&["cursor", "claude_code", "codex", "grok", "gemini_cli", "opencode"]);
+        let all = v(&[
+            "cursor",
+            "claude_code",
+            "codex",
+            "grok",
+            "gemini_cli",
+            "opencode",
+        ]);
         let order = merge_order(&saved, &all);
         let codex = order.iter().position(|k| k == "codex").unwrap();
         assert_eq!(order[codex + 1], "grok", "grok must land right after codex");

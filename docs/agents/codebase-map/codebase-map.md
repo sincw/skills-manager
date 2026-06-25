@@ -70,7 +70,8 @@
 
 ## Modules And Seams
 
-- `central_repo` owns base-dir selection, external `--skills-root` state namespacing, repo path migration, and canonical data paths.
+- `Central repo`: CLI `repo` commands and `app_state` enter through `central_repo`; it owns base-dir selection, external `--skills-root` state namespacing, repo path migration, and canonical data paths.
+- `Skill`: CLI `skills` commands and Web skills routes route lifecycle work through `skill_actions`; install staging uses `installer`/`git_fetcher`, records live in `SkillStore`, and metadata projection uses `sync_metadata`.
 - `SkillStore` owns SQLite access for skills, targets, discovered skills, scenarios, settings, projects, audit, and encrypted sensitive settings.
 - `migrations` owns DB schema evolution; use it instead of ad hoc schema writes.
 - `repo_lock` is the cross-process write lock seam for central repo and sync metadata mutations.
@@ -82,9 +83,11 @@
 - `git_fetcher` owns Git URL parsing, cloning, branch/revision resolution, proxy use, temp cleanup, and skill subpath discovery.
 - `skillssh_api` is the skills.sh search/cache boundary used by CLI marketplace search.
 - `git_backup` owns Git-backed backup/restore/status logic for the central skills directory.
-- `scenario_service` owns preset-to-tool target planning, active preset application, unsync behavior, and per-skill/per-tool sync helpers.
+- `Preset`/`Scenario`: CLI `presets` (`scenarios` alias) and Web preset routes use `SkillStore` for membership state, `scenario_service` for target planning/apply/unsync, and `sync_metadata` for exported snapshot state.
+- `Sync target`: preview through `presets preview` or `skills sync --dry-run`; `scenario_service` plans targets, `sync_engine` mutates filesystem targets, and `SkillTargetRecord` stores sync results.
 - `sync_engine` owns filesystem sync primitives: symlink/copy modes, current-target detection, target removal, and destination safety checks.
 - `sync_metadata` owns JSON snapshot files under `<skills_dir>/.skills-manager`, snapshot fingerprinting, metadata reindex, and atomic writes.
+- `Tool adapter`: CLI `tools` and Web workspace/tool routes project through `tool_adapters` for built-in/custom paths and through `tool_service` for enabled state, ordering, and `ToolInfo`.
 - `tool_adapters` owns built-in/custom tool definitions, skills directories, detection paths, project-relative paths, recursive scan flags, and UI category.
 - Built-in adapter additions or path changes should start in `tool_adapters`; UI ordering and disabled state belong in `tool_service`.
 - `tool_service` owns disabled tools, tool order, custom path settings, and `ToolInfo` projection.
@@ -92,6 +95,7 @@
 - `crypto` encrypts sensitive setting values such as proxy URL and git backup remote URL.
 - `path_guard`, `validation.ts`, and archive extraction guard filesystem/path inputs at different layers; prefer them over local string checks.
 - `audit_log` and `SkillStore::log_audit` are the Rust audit seam for core skill actions.
+- `Web Companion`: API routes enter at `web/server/src/routes.ts`, CLI handoff is `web/server/src/cli.ts`, write jobs/logs are `operations.ts`, browser calls use `web/client/src/lib/tauri.ts`, and route contract tests start in `web/server/test/routes.test.ts`.
 - `web/server/src/config.ts` owns env var interpretation and Linux-only Web Companion constraints.
 - `web/server/src/validation.ts` owns request validation for absolute Linux paths, Git URLs, arrays, booleans, and confirmation checks.
 - `web/server/src/operations.ts` owns in-memory jobs plus JSONL command/audit logging.

@@ -49,6 +49,48 @@ console.log(JSON.stringify({ args }));
   };
 }
 
+function makeMissingWorkspaceCliConfig(): ServerConfig {
+  dir = mkdtempSync(path.join(tmpdir(), "skills-manager-web-routes-"));
+  const codexSkillsDir = path.join(dir, "codex-skills");
+  mkdirSync(path.join(codexSkillsDir, "local-only"), { recursive: true });
+  writeFileSync(path.join(codexSkillsDir, "local-only", "SKILL.md"), "# Local Only\n", "utf8");
+  const cli = path.join(dir, "missing-workspaces-cli.mjs");
+  writeFileSync(
+    cli,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes("workspaces")) {
+  console.error(JSON.stringify({ ok: false, error: "error: unrecognized subcommand 'workspaces'" }));
+  process.exit(2);
+}
+if (args.includes("tools") && args.includes("list")) {
+  console.log(JSON.stringify([{
+    key: "codex",
+    display_name: "Codex",
+    installed: true,
+    skills_dir: ${JSON.stringify(codexSkillsDir)},
+    enabled: true,
+    is_custom: false,
+    project_relative_skills_dir: ".codex/skills"
+  }]));
+  process.exit(0);
+}
+console.log(JSON.stringify({ args }));
+`,
+    { mode: 0o755 },
+  );
+  return {
+    cliPath: cli,
+    host: "127.0.0.1",
+    port: 0,
+    token: null,
+    skillsRoot: null,
+    dataDir: dir,
+    auditLogPath: path.join(dir, "audit.jsonl"),
+    commandLogPath: path.join(dir, "commands.jsonl"),
+  };
+}
+
 function makeLegacyCliConfig(): ServerConfig {
   dir = mkdtempSync(path.join(tmpdir(), "skills-manager-web-routes-"));
   const dbPath = path.join(dir, "skills-manager.db");
@@ -339,6 +381,66 @@ describe("routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().data).toEqual([project]);
+  });
+
+  it("routes global workspace skill listing through the workspaces CLI seam", async () => {
+    const app = await createServer(makeConfig());
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/workspaces/global/codex/skills",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    const payload = response.json();
+    expect(payload.ok).toBe(true);
+    expect(payload.data.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "global",
+      "list-skills",
+      "codex",
+    ]);
+  });
+
+  it("routes global workspace document reads through the workspaces CLI seam", async () => {
+    const app = await createServer(makeConfig());
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/workspaces/global/codex/skills/research%2Falpha/document",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    const payload = response.json();
+    expect(payload.ok).toBe(true);
+    expect(payload.data.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "workspaces",
+      "global",
+      "document",
+      "codex",
+      "research/alpha",
+    ]);
+  });
+
+  it("reports missing workspace CLI capability for global workspace reads without filesystem fallback", async () => {
+    const app = await createServer(makeMissingWorkspaceCliConfig());
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/workspaces/global/codex/skills",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(503);
+    const payload = response.json();
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toContain("Workspace CLI capability");
+    expect(payload.data).toBeNull();
   });
 
   it("fetches skills.sh leaderboard pages instead of using CLI search wildcard", async () => {

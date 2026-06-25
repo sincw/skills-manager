@@ -25,3 +25,7 @@ This slice should also establish the CLI capability signal that later slices can
 ## Blocked by
 
 None - can start immediately
+
+## Comments
+
+Completed the first `workspaces` CLI read slice for Global Workspace. Added `workspaces global list-skills` and `workspaces global document`, moved the Web global workspace list/document routes onto the CLI seam, and added a clear 503 capability error when `workspaces` is unavailable. Verified with focused route tests and the full Rust/Web test suites.

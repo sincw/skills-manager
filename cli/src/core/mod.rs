@@ -24,3 +24,4 @@ pub mod sync_metadata;
 pub mod timing;
 pub mod tool_adapters;
 pub mod tool_service;
+pub mod workspace_service;

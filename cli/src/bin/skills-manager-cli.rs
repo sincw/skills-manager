@@ -5,8 +5,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use app_lib::core::{
     app_state, central_repo, error::AppError, git_backup, git_fetcher, installer,
-    repo_lock::RepoLock, scenario_service, skill_metadata, skill_store::SkillStore, skillssh_api,
-    skill_actions as cmd, sync_engine, sync_metadata, tool_service,
+    repo_lock::RepoLock, scenario_service, skill_actions as cmd, skill_metadata,
+    skill_store::SkillStore, skillssh_api, sync_engine, sync_metadata, tool_service,
+    workspace_service,
 };
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
@@ -28,6 +29,7 @@ enum Commands {
     Repo(RepoArgs),
     Tools(ToolsArgs),
     Skills(SkillsArgs),
+    Workspaces(WorkspacesArgs),
     #[command(alias = "scenarios")]
     Presets(PresetArgs),
     Git(GitArgs),
@@ -177,6 +179,29 @@ enum TagCommand {
 struct PresetArgs {
     #[command(subcommand)]
     command: PresetCommand,
+}
+
+#[derive(Args, Debug)]
+struct WorkspacesArgs {
+    #[command(subcommand)]
+    command: WorkspacesCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum WorkspacesCommand {
+    Global(GlobalWorkspaceArgs),
+}
+
+#[derive(Args, Debug)]
+struct GlobalWorkspaceArgs {
+    #[command(subcommand)]
+    command: GlobalWorkspaceCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum GlobalWorkspaceCommand {
+    ListSkills { tool: String },
+    Document { tool: String, relative_path: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -455,6 +480,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Repo(args) => run_repo(args, &store, cli.json),
         Commands::Tools(args) => run_tools(args, &store, cli.json),
         Commands::Skills(args) => run_skills(args, &store, cli.json),
+        Commands::Workspaces(args) => run_workspaces(args, &store, cli.json),
         Commands::Presets(args) => run_presets(args, &store, cli.json),
         Commands::Git(args) => run_git(args, cli.skills_root.is_some(), cli.json),
     }
@@ -496,6 +522,42 @@ fn repo_status(store: &SkillStore) -> RepoStatus {
 fn run_tools(args: ToolsArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
     match args.command {
         ToolsCommand::List => print_json(&tool_service::list_tool_info(store), json),
+    }
+    Ok(())
+}
+
+// ── workspaces ────────────────────────────────────────────────────────────
+
+fn run_workspaces(args: WorkspacesArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
+    match args.command {
+        WorkspacesCommand::Global(global) => run_global_workspace(global, store, json)?,
+    }
+    Ok(())
+}
+
+fn run_global_workspace(
+    args: GlobalWorkspaceArgs,
+    store: &SkillStore,
+    json: bool,
+) -> anyhow::Result<()> {
+    match args.command {
+        GlobalWorkspaceCommand::ListSkills { tool } => {
+            let skills = workspace_service::list_global_workspace_skills(store, &tool)
+                .map_err(map_app_err)?;
+            print_json(&skills, json);
+        }
+        GlobalWorkspaceCommand::Document {
+            tool,
+            relative_path,
+        } => {
+            let document = workspace_service::read_global_workspace_skill_document(
+                store,
+                &tool,
+                &relative_path,
+            )
+            .map_err(map_app_err)?;
+            print_json(&document, json);
+        }
     }
     Ok(())
 }
@@ -646,7 +708,11 @@ fn show_skill(store: &SkillStore, reference: &str) -> anyhow::Result<SkillDetail
 
 fn export_skill(store: &SkillStore, reference: &str, dest: &Path) -> anyhow::Result<String> {
     let skill = resolve_skill(store, reference)?;
-    sync_engine::sync_skill(Path::new(&skill.central_path), dest, sync_engine::SyncMode::Copy)?;
+    sync_engine::sync_skill(
+        Path::new(&skill.central_path),
+        dest,
+        sync_engine::SyncMode::Copy,
+    )?;
     Ok(dest.to_string_lossy().to_string())
 }
 
@@ -739,7 +805,9 @@ fn classify_ref(
 fn is_skillssh_shorthand(s: &str) -> bool {
     // owner/repo, owner/repo/skill, owner/repo@skill
     fn seg_ok(s: &str) -> bool {
-        !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-'))
     }
     let (head, _at_skill) = match s.split_once('@') {
         Some((h, t)) if seg_ok(t) => (h, Some(t)),
@@ -750,10 +818,7 @@ fn is_skillssh_shorthand(s: &str) -> bool {
     (parts.len() == 2 || parts.len() == 3) && parts.iter().all(|p| seg_ok(p))
 }
 
-fn resolve_sync_target(
-    store: &SkillStore,
-    target: &SyncTarget,
-) -> anyhow::Result<Option<String>> {
+fn resolve_sync_target(store: &SkillStore, target: &SyncTarget) -> anyhow::Result<Option<String>> {
     match target {
         SyncTarget::None => Ok(None),
         SyncTarget::Active => Ok(store.get_active_scenario_id()?),
@@ -777,9 +842,7 @@ fn run_install(
     let (skill_id, install_name, central_path, source_type) = match kind {
         InstallKind::Local => install_local_action(store, reference, name, preset_id.as_deref())?,
         InstallKind::Git => install_git_action(store, reference, name, preset_id.as_deref())?,
-        InstallKind::Skillssh => {
-            install_skillssh_action(store, reference, preset_id.as_deref())?
-        }
+        InstallKind::Skillssh => install_skillssh_action(store, reference, preset_id.as_deref())?,
     };
 
     Ok(InstallReport {
@@ -818,9 +881,8 @@ fn install_local_action(
     };
     let central_path = result.central_path.to_string_lossy().to_string();
     let install_name = result.name.clone();
-    let skill_id =
-        cmd::store_installed_skill_unlocked(store, &result, &metadata, active_scenario)
-            .map_err(map_app_err)?;
+    let skill_id = cmd::store_installed_skill_unlocked(store, &result, &metadata, active_scenario)
+        .map_err(map_app_err)?;
     Ok((skill_id, install_name, central_path, "local".to_string()))
 }
 
@@ -842,8 +904,8 @@ fn install_git_action(
     )?;
     let result = (|| -> anyhow::Result<(String, String, String)> {
         let _lock = RepoLock::acquire("cli install git")?;
-        let skill_dir =
-            cmd::resolve_skill_dir(&temp_dir, parsed.subpath.as_deref(), None).map_err(map_app_err)?;
+        let skill_dir = cmd::resolve_skill_dir(&temp_dir, parsed.subpath.as_deref(), None)
+            .map_err(map_app_err)?;
         let revision = git_fetcher::get_head_revision(&temp_dir)?;
         let install_result = installer::install_from_git_dir(&skill_dir, name)?;
         let metadata = cmd::InstallSourceMetadata {
@@ -877,7 +939,8 @@ fn install_skillssh_action(
     let proxy_url = store.proxy_url();
     let repo_url = format!("https://github.com/{}.git", source);
     let cancel = Arc::new(AtomicBool::new(false));
-    let temp_dir = git_fetcher::clone_repo_ref(&repo_url, None, Some(&cancel), proxy_url.as_deref())?;
+    let temp_dir =
+        git_fetcher::clone_repo_ref(&repo_url, None, Some(&cancel), proxy_url.as_deref())?;
     let result = (|| -> anyhow::Result<(String, String, String)> {
         let _lock = RepoLock::acquire("cli install skillssh")?;
         let skill_dir =
@@ -975,24 +1038,22 @@ fn run_update(
                     },
                 }
             }
-            "local" | "import" => {
-                match cmd::reimport_local_skill_internal(store, &skill.id) {
-                    Ok(_) => UpdateReport {
-                        skill_id: skill.id.clone(),
-                        name: skill.name.clone(),
-                        source_type: skill.source_type.clone(),
-                        refreshed: true,
-                        error: None,
-                    },
-                    Err(e) => UpdateReport {
-                        skill_id: skill.id.clone(),
-                        name: skill.name.clone(),
-                        source_type: skill.source_type.clone(),
-                        refreshed: false,
-                        error: Some(e.message.clone()),
-                    },
-                }
-            }
+            "local" | "import" => match cmd::reimport_local_skill_internal(store, &skill.id) {
+                Ok(_) => UpdateReport {
+                    skill_id: skill.id.clone(),
+                    name: skill.name.clone(),
+                    source_type: skill.source_type.clone(),
+                    refreshed: true,
+                    error: None,
+                },
+                Err(e) => UpdateReport {
+                    skill_id: skill.id.clone(),
+                    name: skill.name.clone(),
+                    source_type: skill.source_type.clone(),
+                    refreshed: false,
+                    error: Some(e.message.clone()),
+                },
+            },
             other => UpdateReport {
                 skill_id: skill.id.clone(),
                 name: skill.name.clone(),
@@ -1100,10 +1161,7 @@ fn run_remove(
         });
     }
     if !yes {
-        bail!(
-            "refusing to delete {} skill(s) without --yes",
-            ids.len()
-        );
+        bail!("refusing to delete {} skill(s) without --yes", ids.len());
     }
 
     let result = cmd::delete_managed_skills_by_ids(store, &ids).map_err(map_app_err)?;
@@ -1140,7 +1198,11 @@ fn run_deprecated_set_enabled(
         } else {
             false
         };
-        let enabled_after = if requested_enabled { true } else { skill.enabled };
+        let enabled_after = if requested_enabled {
+            true
+        } else {
+            skill.enabled
+        };
         let message = if requested_enabled {
             "Deprecated no-op: skills are enabled by adding them to a preset; this command only restores legacy sync inclusion."
         } else {
@@ -1304,7 +1366,12 @@ fn run_adopt(
                      https://github.com/owner/repo/tree/branch/path/to/skill"
                 );
             }
-            Some((parsed.clone_url, subpath, parsed.branch, Some(url.to_string())))
+            Some((
+                parsed.clone_url,
+                subpath,
+                parsed.branch,
+                Some(url.to_string()),
+            ))
         } else {
             None
         };
@@ -1499,7 +1566,11 @@ fn run_tag(args: TagArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> 
     match args.command {
         TagCommand::Add { reference, tags } => {
             let skill = resolve_skill(store, &reference)?;
-            let mut current = store.get_tags_map()?.get(&skill.id).cloned().unwrap_or_default();
+            let mut current = store
+                .get_tags_map()?
+                .get(&skill.id)
+                .cloned()
+                .unwrap_or_default();
             for t in tags {
                 if !current.iter().any(|c| c == &t) {
                     current.push(t);
@@ -1518,7 +1589,11 @@ fn run_tag(args: TagArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> 
         }
         TagCommand::Remove { reference, tags } => {
             let skill = resolve_skill(store, &reference)?;
-            let mut current = store.get_tags_map()?.get(&skill.id).cloned().unwrap_or_default();
+            let mut current = store
+                .get_tags_map()?
+                .get(&skill.id)
+                .cloned()
+                .unwrap_or_default();
             current.retain(|c| !tags.iter().any(|t| t == c));
             store.set_tags_for_skill(&skill.id, &current)?;
             sync_metadata::ensure_skill_metadata(store, &skill.id)?;
@@ -1534,7 +1609,11 @@ fn run_tag(args: TagArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> 
         TagCommand::List { reference } => {
             if let Some(r) = reference {
                 let skill = resolve_skill(store, &r)?;
-                let tags = store.get_tags_map()?.get(&skill.id).cloned().unwrap_or_default();
+                let tags = store
+                    .get_tags_map()?
+                    .get(&skill.id)
+                    .cloned()
+                    .unwrap_or_default();
                 print_json(
                     &TagReport {
                         skill_id: skill.id,
@@ -1567,14 +1646,13 @@ fn run_presets(args: PresetArgs, store: &SkillStore, json: bool) -> anyhow::Resu
         }
         PresetCommand::Preview { reference } => {
             let preset = resolve_scenario(store, &reference)?;
-            let preview = scenario_service::preview_scenario_sync(store, &preset.id)
-                .map_err(map_app_err)?;
+            let preview =
+                scenario_service::preview_scenario_sync(store, &preset.id).map_err(map_app_err)?;
             print_json(&preview, json);
         }
         PresetCommand::Apply { reference } => {
             let preset = resolve_scenario(store, &reference)?;
-            scenario_service::apply_scenario_to_default(store, &preset.id)
-                .map_err(map_app_err)?;
+            scenario_service::apply_scenario_to_default(store, &preset.id).map_err(map_app_err)?;
             print_json(&current_preset(store)?, json);
         }
         PresetCommand::Deactivate { reference } => {
@@ -1598,8 +1676,7 @@ fn run_presets(args: PresetArgs, store: &SkillStore, json: bool) -> anyhow::Resu
                 // any skills it shares with the active preset. Unsync this
                 // preset first, then re-sync the active preset so the shared
                 // targets are restored.
-                scenario_service::unsync_scenario_skills(store, &preset.id)
-                    .map_err(map_app_err)?;
+                scenario_service::unsync_scenario_skills(store, &preset.id).map_err(map_app_err)?;
                 if let Some(active_id) = active.as_deref() {
                     scenario_service::sync_scenario_skills(store, active_id)
                         .map_err(map_app_err)?;

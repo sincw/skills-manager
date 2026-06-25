@@ -949,16 +949,29 @@ async function exportSkillToProjectCompat(
 }
 
 function sendCli(reply: FastifyReply, result: Awaited<ReturnType<typeof runCli>>): void {
-  const status = result.ok ? 200 : 500;
+  const capabilityError = workspaceCapabilityError(result);
+  const status = result.ok ? 200 : capabilityError ? 503 : 500;
   reply.code(status).send({
     ok: result.ok,
     command: result.command,
     durationMs: result.durationMs,
-    data: result.data,
+    data: capabilityError ? null : result.data ?? null,
     exitCode: result.exitCode,
-    error: result.error,
+    error: capabilityError ?? result.error,
     stderr: result.ok ? undefined : result.stderr,
   });
+}
+
+function workspaceCapabilityError(result: Awaited<ReturnType<typeof runCli>>): string | null {
+  if (!result.command.includes("workspaces")) return null;
+  const message = `${result.error ?? ""}\n${result.stderr ?? ""}\n${result.stdout ?? ""}`;
+  if (
+    message.includes("unrecognized subcommand") &&
+    message.includes("workspaces")
+  ) {
+    return "Missing Workspace CLI capability. Upgrade or configure a skills-manager-cli with the workspaces command.";
+  }
+  return null;
 }
 
 async function runAndRecord(
@@ -1310,32 +1323,20 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
 
   app.get<{ Params: { agent: string } }>("/api/workspaces/global/:agent/skills", async (request, reply) => {
     const agentKey = refParam(request.params.agent);
-    const tools = await readTools(request, ctx);
-    const tool = tools.find((item) => item.key === agentKey);
-    if (!tool) {
-      reply.code(404).send({ ok: false, error: "agent not found" });
-      return;
-    }
-    if (!tool.installed) {
-      reply.send({ ok: true, data: [] });
-      return;
-    }
-    const skills = await readSkillsDirectory(tool.skills_dir, tool);
-    reply.send({ ok: true, data: skills });
+    return directCli(request, reply, ctx, ["workspaces", "global", "list-skills", agentKey]);
   });
   app.get<{ Params: { agent: string; relativePath: string } }>(
     "/api/workspaces/global/:agent/skills/:relativePath/document",
     async (request, reply) => {
       const agentKey = refParam(request.params.agent);
       const relativePath = refParam(request.params.relativePath);
-      const tools = await readTools(request, ctx);
-      const tool = tools.find((item) => item.key === agentKey);
-      if (!tool) {
-        reply.code(404).send({ ok: false, error: "agent not found" });
-        return;
-      }
-      const document = await readWorkspaceDocument(tool.skills_dir, relativePath);
-      reply.send({ ok: true, data: document });
+      return directCli(request, reply, ctx, [
+        "workspaces",
+        "global",
+        "document",
+        agentKey,
+        relativePath,
+      ]);
     },
   );
   app.delete<{ Params: { agent: string; relativePath: string } }>(

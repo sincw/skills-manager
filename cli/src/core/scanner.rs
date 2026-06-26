@@ -45,9 +45,18 @@ fn is_symlink_to_central(path: &Path) -> bool {
 /// Stops descending when a skill dir is found (skills don't nest). Skips
 /// `.git` / `node_modules` / `.hub` and guards against symlink cycles.
 pub fn collect_skill_dirs(dir: &Path) -> Vec<PathBuf> {
+    collect_skill_dirs_with_max_depth(dir, None)
+}
+
+/// Like [`collect_skill_dirs`] but limits traversal depth: a non-skill
+/// directory at depth `max_depth` won't have its children scanned.
+/// `max_depth=0` finds skills among `dir`'s immediate children only;
+/// `max_depth=1` finds children and grandchildren; and so on.
+/// Pass `None` for unlimited depth.
+pub fn collect_skill_dirs_with_max_depth(dir: &Path, max_depth: Option<usize>) -> Vec<PathBuf> {
     let mut results = Vec::new();
     let mut visited = HashSet::new();
-    collect_skill_dirs_recursive(dir, &mut visited, &mut results);
+    collect_skill_dirs_recursive(dir, &mut visited, &mut results, 0, max_depth);
     results
 }
 
@@ -55,7 +64,14 @@ fn collect_skill_dirs_recursive(
     dir: &Path,
     visited: &mut HashSet<PathBuf>,
     results: &mut Vec<PathBuf>,
+    depth: usize,
+    max_depth: Option<usize>,
 ) {
+    if let Some(limit) = max_depth {
+        if depth > limit {
+            return;
+        }
+    }
     let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     if !visited.insert(canonical) {
         return;
@@ -81,7 +97,7 @@ fn collect_skill_dirs_recursive(
             results.push(path);
             continue;
         }
-        collect_skill_dirs_recursive(&path, visited, results);
+        collect_skill_dirs_recursive(&path, visited, results, depth + 1, max_depth);
     }
 }
 
@@ -147,7 +163,7 @@ fn scan_recursive_dir(
 ) {
     let mut skill_dirs = Vec::new();
     let mut visited = HashSet::new();
-    collect_skill_dirs_recursive(scan_dir, &mut visited, &mut skill_dirs);
+    collect_skill_dirs_recursive(scan_dir, &mut visited, &mut skill_dirs, 0, None);
     for path in skill_dirs {
         push_discovered(adapter_key, path, managed_paths, discovered);
     }
@@ -268,7 +284,7 @@ mod tests {
     fn run(root: &Path) -> Vec<PathBuf> {
         let mut results = Vec::new();
         let mut visited = HashSet::new();
-        collect_skill_dirs_recursive(root, &mut visited, &mut results);
+        collect_skill_dirs_recursive(root, &mut visited, &mut results, 0, None);
         results.sort();
         results
     }

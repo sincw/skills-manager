@@ -216,6 +216,12 @@ export interface BatchImportResult {
   errors: string[];
 }
 
+/** Shape of the CLI AdoptReport returned as a job result. */
+interface AdoptJobResult {
+  adopted?: Array<{ skill_id: string; name: string }>;
+  skipped?: Array<{ path: string; name: string; reason: string }>;
+}
+
 export interface UpdateSkillResult {
   skill: ManagedSkill;
   content_changed: boolean;
@@ -707,8 +713,13 @@ export const detachLocalSkillSource = (skillId: string) => {
 };
 
 export const batchImportFolder = async (folderPath: string): Promise<BatchImportResult> => {
-  await post<WebJob>("/api/skills/adopt", { paths: [folderPath], confirm: true });
-  return { imported: 0, skipped: 0, errors: [] };
+  const job = await waitForQueuedWrite(
+    post<WebJob>("/api/skills/adopt", { paths: [folderPath], confirm: true }),
+  );
+  const data = job.result as AdoptJobResult | null;
+  const adopted = data?.adopted?.length ?? 0;
+  const skipped = data?.skipped?.length ?? 0;
+  return { imported: adopted, skipped, errors: [] };
 };
 
 export const getAllTags = () => get<string[]>("/api/tags");

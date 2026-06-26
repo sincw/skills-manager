@@ -5,9 +5,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use app_lib::core::{
     app_state, central_repo, error::AppError, git_backup, git_fetcher, installer,
-    repo_lock::RepoLock, scenario_service, skill_actions as cmd, skill_metadata,
-    skill_store::SkillStore, skillssh_api, sync_engine, sync_metadata, tool_service,
-    workspace_service,
+    repo_lock::RepoLock, scanner, scenario_service, skill_actions as cmd,
+    skill_metadata, skill_store::SkillStore, skillssh_api, sync_engine,
+    sync_metadata, tool_service, workspace_service,
 };
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
@@ -1580,13 +1580,15 @@ fn run_adopt(
             continue;
         }
 
-        for entry in std::fs::read_dir(&path)? {
-            let entry = entry?;
-            let dir = entry.path();
-            if !dir.is_dir() {
-                continue;
-            }
-            let is_symlink = entry.file_type()?.is_symlink();
+        // Scan up to 2 levels deep for skill directories (children + grandchildren).
+        // Uses the shared scanner which safely handles symlink cycles,
+        // .git / node_modules / .hub exclusions, and stops descending
+        // into a directory once it identifies it as a skill.
+        let skill_dirs = scanner::collect_skill_dirs_with_max_depth(&path, Some(1));
+        for dir in skill_dirs {
+            let is_symlink = std::fs::symlink_metadata(&dir)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
             classify_adopt_candidate(
                 &dir,
                 is_symlink,

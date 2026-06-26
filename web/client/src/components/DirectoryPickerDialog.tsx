@@ -10,6 +10,8 @@ interface Props {
   title: string;
   initialPath?: string;
   confirmLabel?: string;
+  description?: string;
+  allowManualPath?: boolean;
   onClose: () => void;
   onSelect: (path: string) => Promise<void> | void;
 }
@@ -19,6 +21,8 @@ export function DirectoryPickerDialog({
   title,
   initialPath,
   confirmLabel,
+  description,
+  allowManualPath = false,
   onClose,
   onSelect,
 }: Props) {
@@ -62,11 +66,12 @@ export function DirectoryPickerDialog({
   if (!open) return null;
 
   const handleSelect = async () => {
-    if (!listing) return;
+    const selectedPath = allowManualPath ? inputPath.trim() : listing?.path;
+    if (!selectedPath) return;
     setSelecting(true);
     setError(null);
     try {
-      await onSelect(listing.path);
+      await onSelect(selectedPath);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : t("common.requestFailed"));
@@ -84,6 +89,9 @@ export function DirectoryPickerDialog({
         <div className="flex items-start justify-between gap-3 border-b border-border-subtle p-5 pb-4">
           <div className="min-w-0">
             <h2 className="text-[14px] font-semibold text-primary">{title}</h2>
+            {description ? (
+              <p className="mt-1 text-[12px] leading-5 text-muted">{description}</p>
+            ) : null}
             <p className="mt-1 truncate text-[12px] text-muted" title={listing?.path ?? inputPath}>
               {listing?.path ?? inputPath}
             </p>
@@ -179,10 +187,10 @@ export function DirectoryPickerDialog({
           </button>
           <button
             onClick={handleSelect}
-            disabled={!listing || loading || selecting}
+            disabled={!(allowManualPath ? inputPath.trim() : listing) || loading || selecting}
             className={cn(
               "flex items-center gap-2 rounded-[4px] border border-accent-border bg-accent-dark px-3 py-1.5 text-[13px] font-medium text-white outline-none transition-colors hover:bg-accent",
-              (!listing || loading || selecting) && "cursor-not-allowed opacity-50",
+              (!(allowManualPath ? inputPath.trim() : listing) || loading || selecting) && "cursor-not-allowed opacity-50",
             )}
           >
             {selecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}

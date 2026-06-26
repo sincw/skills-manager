@@ -34,13 +34,19 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { StatusBanner } from "../components/StatusBanner";
+import { DirectoryPickerDialog } from "../components/DirectoryPickerDialog";
 import { getErrorMessage, getErrorKind } from "../lib/error";
+import { resolveLocalPathSelection, type LocalPathPickerMode } from "./installLocalPathFallback";
 
 const MARKET_PAGE_SIZE = 24;
 const MARKET_SEARCH_STEP = 60;
 const MARKET_SEARCH_DEBOUNCE_MS = 450;
 const MARKET_SEARCH_CACHE_TTL_MS = 120_000;
 const MARKET_SEARCH_CACHE_MAX_ENTRIES = 150;
+
+function isBrowserPathFallbackAvailable(): boolean {
+  return typeof window !== "undefined" && !("__TAURI__" in window) && !("__TAURI_INTERNALS__" in window);
+}
 
 export function InstallSkills() {
   const { t } = useTranslation();
@@ -69,6 +75,7 @@ export function InstallSkills() {
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [scanLoading, setScanLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [localPathPickerMode, setLocalPathPickerMode] = useState<LocalPathPickerMode | null>(null);
   const [importingPaths, setImportingPaths] = useState<Set<string>>(new Set());
   const [importingAll, setImportingAll] = useState(false);
   const [renameEditing, setRenameEditing] = useState<Record<string, string>>({});
@@ -323,12 +330,16 @@ export function InstallSkills() {
 
   const handleLocalFolderInstall = async () => {
     try {
-      const selected = await open({
+      const selection = resolveLocalPathSelection(await open({
         directory: true,
         multiple: false,
-      });
-      if (!selected) return;
-      installLocalSource(selected as string);
+      }), "folder", isBrowserPathFallbackAvailable());
+      if (selection.fallbackMode) {
+        setLocalPathPickerMode(selection.fallbackMode);
+        return;
+      }
+      if (!selection.sourcePath) return;
+      installLocalSource(selection.sourcePath);
     } catch (error: unknown) {
       const message = getErrorMessage(error, t("common.error"));
       setLocalError(message);
@@ -338,12 +349,16 @@ export function InstallSkills() {
 
   const handleLocalFileInstall = async () => {
     try {
-      const selected = await open({
+      const selection = resolveLocalPathSelection(await open({
         multiple: false,
         filters: [{ name: "Skills", extensions: ["zip", "skill"] }],
-      });
-      if (!selected) return;
-      installLocalSource(selected as string);
+      }), "archive", isBrowserPathFallbackAvailable());
+      if (selection.fallbackMode) {
+        setLocalPathPickerMode(selection.fallbackMode);
+        return;
+      }
+      if (!selection.sourcePath) return;
+      installLocalSource(selection.sourcePath);
     } catch (error: unknown) {
       const message = getErrorMessage(error, t("common.error"));
       setLocalError(message);
@@ -351,15 +366,9 @@ export function InstallSkills() {
     }
   };
 
-  const handleBatchImportFolder = async () => {
+  const batchImportFolderSource = async (sourcePath: string, rethrow = false) => {
     let unlisten: (() => void) | null = null;
     try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-      });
-      if (!selected) return;
-
       const toastId = toast.loading(t("install.local.batchImporting"));
 
       unlisten = await listen<{ current: number; total: number; name: string }>(
@@ -374,7 +383,7 @@ export function InstallSkills() {
       );
 
       const result: BatchImportResult = await api.batchImportFolder(
-        selected as string
+        sourcePath
       );
 
       if (result.errors.length > 0) {
@@ -406,9 +415,39 @@ export function InstallSkills() {
       const message = getErrorMessage(error, t("common.error"));
       setLocalError(message);
       toast.error(message);
+      if (rethrow) throw error;
     } finally {
       unlisten?.();
     }
+  };
+
+  const handleBatchImportFolder = async () => {
+    try {
+      const selection = resolveLocalPathSelection(await open({
+        directory: true,
+        multiple: false,
+      }), "batch", isBrowserPathFallbackAvailable());
+      if (selection.fallbackMode) {
+        setLocalPathPickerMode(selection.fallbackMode);
+        return;
+      }
+      if (!selection.sourcePath) return;
+
+      await batchImportFolderSource(selection.sourcePath);
+    } catch (error: unknown) {
+      const message = getErrorMessage(error, t("common.error"));
+      setLocalError(message);
+      toast.error(message);
+    }
+  };
+
+  const handleLocalPathPicked = async (sourcePath: string) => {
+    if (!localPathPickerMode) return;
+    if (localPathPickerMode === "batch") {
+      await batchImportFolderSource(sourcePath, true);
+      return;
+    }
+    await installLocalSource(sourcePath);
   };
 
   const handleInstallSkillssh = async (skill: SkillsShSkill) => {
@@ -714,6 +753,21 @@ export function InstallSkills() {
       ?.children[sourceFocusedIndex]
       ?.scrollIntoView({ block: "nearest" });
   }, [sourceFocusedIndex]);
+
+  const localPathPickerTitle =
+    localPathPickerMode === "archive"
+      ? t("install.local.pathDialogArchiveTitle")
+      : localPathPickerMode === "batch"
+        ? t("install.local.pathDialogBatchTitle")
+        : t("install.local.pathDialogFolderTitle");
+  const localPathPickerDescription =
+    localPathPickerMode === "archive"
+      ? t("install.local.pathDialogArchiveDescription")
+      : t("install.local.pathDialogFolderDescription");
+  const localPathPickerConfirm =
+    localPathPickerMode === "batch"
+      ? t("install.local.batchImport")
+      : t("install.local.pathDialogConfirm");
 
   return (
     <div className="app-page gap-4">
@@ -1509,6 +1563,16 @@ export function InstallSkills() {
           </div>
         </div>
       )}
+
+      <DirectoryPickerDialog
+        open={localPathPickerMode !== null}
+        title={localPathPickerTitle}
+        description={localPathPickerDescription}
+        confirmLabel={localPathPickerConfirm}
+        allowManualPath
+        onClose={() => setLocalPathPickerMode(null)}
+        onSelect={handleLocalPathPicked}
+      />
 
       {/* Git preview / selection dialog */}
       {gitPreview && (

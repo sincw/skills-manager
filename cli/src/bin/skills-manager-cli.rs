@@ -1023,6 +1023,38 @@ fn install_local_action(
         bail!("local path does not exist: {}", path.display());
     }
 
+    // Guard: refuse to install a directory that is not itself a skill
+    // but contains child skill directories — the user probably wants
+    // `skills adopt` (batch import) instead.
+    if !skill_metadata::is_valid_skill_dir(&path) {
+        let child_skills: Vec<_> = std::fs::read_dir(&path)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry.file_type()
+                    .map(|ft| ft.is_dir() || ft.is_symlink())
+                    .unwrap_or(false)
+                    && skill_metadata::is_valid_skill_dir(&entry.path())
+            })
+            .collect();
+        if !child_skills.is_empty() {
+            bail!(
+                "Not a skill directory (no SKILL.md / skill.md found).\n\
+                 This directory contains {} skill subdirector{}.\n\
+                 Use \"Batch Import from Folder\" (skills adopt) in the UI,\
+                 or run: skills-manager-cli skills adopt \"{}\"",
+                child_skills.len(),
+                if child_skills.len() == 1 { "y" } else { "ies" },
+                path.display(),
+            );
+        }
+        bail!(
+            "Not a valid skill directory: no SKILL.md or skill.md found in {}",
+            path.display(),
+        );
+    }
+
     let _lock = RepoLock::acquire("cli install local")?;
     let result = installer::install_from_local(&path, name)?;
     let metadata = cmd::InstallSourceMetadata {

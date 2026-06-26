@@ -28,6 +28,7 @@ import { AgentIcon } from "./AgentIcon";
 import * as api from "../lib/tauri";
 import type { SyncHealth, ToolCategory, ToolInfo } from "../lib/tauri";
 import { getPresetIconOption } from "../lib/presetIcons";
+import { useGlobalWorkspaceSkillCounts } from "../hooks/useGlobalWorkspaceSkillCounts";
 
 function getSyncHealthIndicator(health: SyncHealth, skillCount: number): { color: string; title: string } | null {
   if (skillCount === 0) return null;
@@ -73,15 +74,7 @@ export function Sidebar() {
   const [globalWorkspaceOpen, setGlobalWorkspaceOpen] = useState(true);
   const [lobsterWorkspaceOpen, setLobsterWorkspaceOpen] = useState(true);
 
-  const globalSkillsByAgent = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const tool of installedTools) {
-      map[tool.key] = managedSkills.filter((skill) =>
-        skill.targets.some((target) => target.tool === tool.key)
-      ).length;
-    }
-    return map;
-  }, [installedTools, managedSkills]);
+  const globalSkillsByAgent = useGlobalWorkspaceSkillCounts(installedTools, managedSkills);
 
   useEffect(() => { setOrderedPresets(presets); }, [presets]);
   useEffect(() => { setOrderedProjects(projects); }, [projects]);

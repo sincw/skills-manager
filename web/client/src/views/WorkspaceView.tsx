@@ -31,6 +31,10 @@ import { getErrorMessage } from "../lib/error";
 import { getTagActiveColor, getTagColor, UNTAGGED_FILTER } from "../lib/skillTags";
 import { AddSkillsSheet } from "../components/AddSkillsSheet";
 import type { WorkspaceConfig } from "./workspaceConfigs";
+import {
+  notifyGlobalWorkspaceSkillCountsChanged,
+  useGlobalWorkspaceSkillCounts,
+} from "../hooks/useGlobalWorkspaceSkillCounts";
 
 function compactHomePath(path: string) {
   return path.replace(/^\/Users\/[^/]+/, "~");
@@ -256,15 +260,7 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
     [tools, config.category]
   );
 
-  const skillCountByAgent = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const tool of installedTools) {
-      map[tool.key] = managedSkills.filter((s) =>
-        s.targets.some((target) => target.tool === tool.key)
-      ).length;
-    }
-    return map;
-  }, [installedTools, managedSkills]);
+  const skillCountByAgent = useGlobalWorkspaceSkillCounts(installedTools, managedSkills);
 
   const currentTool = useMemo(
     () => (agentKey ? installedTools.find((t) => t.key === agentKey) ?? null : null),
@@ -387,21 +383,29 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
     [localSkills]
   );
 
-  const installedIds = useMemo(() => new Set(agentSkills.map((s) => s.id)), [agentSkills]);
+  const managedTargetIds = useMemo(() => new Set(agentSkills.map((s) => s.id)), [agentSkills]);
+
+  const installedIds = useMemo(() => {
+    const ids = new Set(managedTargetIds);
+    for (const skill of localSkills) {
+      if (skill.center_skill_id) ids.add(skill.center_skill_id);
+    }
+    return ids;
+  }, [localSkills, managedTargetIds]);
 
   const managedLocalIds = useMemo(
     () =>
       new Set(
         localSkills
           .map((skill) => skill.center_skill_id)
-          .filter((id): id is string => !!id && installedIds.has(id))
+          .filter((id): id is string => !!id && managedTargetIds.has(id))
       ),
-    [installedIds, localSkills]
+    [localSkills, managedTargetIds]
   );
 
   const managedLocalCount = useMemo(
-    () => localSkills.filter((skill) => !!skill.center_skill_id && managedLocalIds.has(skill.center_skill_id)).length,
-    [localSkills, managedLocalIds]
+    () => localSkills.filter((skill) => !!skill.center_skill_id).length,
+    [localSkills]
   );
 
   const handleRemoveLocalManagedSkill = async (skill: ProjectSkill) => {
@@ -410,6 +414,7 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
     try {
       await api.unsyncSkillFromTool(skill.center_skill_id, agentKey);
       await Promise.all([refreshManagedSkills(), refreshTools(), loadLocalSkills()]);
+      notifyGlobalWorkspaceSkillCountsChanged();
       toast.success(t("globalWorkspace.removedToast", { name: skill.name }));
     } catch (e) {
       toast.error(getErrorMessage(e, t("common.error")));
@@ -420,6 +425,7 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
 
   const handleSheetInstalled = useCallback(async () => {
     await Promise.all([refreshManagedSkills(), refreshTools(), loadLocalSkills()]);
+    notifyGlobalWorkspaceSkillCountsChanged();
   }, [loadLocalSkills, refreshManagedSkills, refreshTools]);
 
   const handleUploadLocalSkill = useCallback(
@@ -450,6 +456,7 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
         await api.deleteGlobalLocalSkill(currentTool.key, skill.relative_path);
         toast.success(t("globalWorkspace.localSkills.deletedLocalToast", { name: skill.name, agent: currentTool.display_name }));
         await loadLocalSkills();
+        notifyGlobalWorkspaceSkillCountsChanged();
       } catch (error: unknown) {
         toast.error(getErrorMessage(error, t("common.error")));
       } finally {
@@ -522,8 +529,9 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
 
   const existsInGlobal = useCallback(
     (skill: ManagedSkill, agentK: string) =>
-      skill.targets.some((target) => target.tool === agentK),
-    []
+      skill.targets.some((target) => target.tool === agentK) ||
+      (agentK === currentToolKey && localSkills.some((local) => local.center_skill_id === skill.id)),
+    [currentToolKey, localSkills]
   );
 
   const handlePresetAdd = useCallback(async (skill: ManagedSkill, agentK: string) => {
@@ -536,6 +544,7 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
 
   const handlePresetComplete = useCallback(async () => {
     await Promise.all([refreshManagedSkills(), refreshTools(), loadLocalSkills()]);
+    notifyGlobalWorkspaceSkillCountsChanged();
   }, [loadLocalSkills, refreshManagedSkills, refreshTools]);
 
   const renderLocalSkillActions = (skill: ProjectSkill, variant: "grid" | "list") => {
@@ -545,13 +554,11 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
     const canPull = skill.sync_status === "center_newer" || skill.sync_status === "diverged";
     const isInSync = skill.sync_status === "in_sync";
     const isManaged = !!skill.center_skill_id && managedLocalIds.has(skill.center_skill_id);
-    const canDeleteLocal = !isManaged && skill.sync_status === "project_only";
+    const canDeleteLocal = !isManaged;
     const removing = removingLocalSkillId === skill.relative_path;
     const buttonClassName = variant === "grid"
       ? "rounded px-2 py-1 text-[13px] font-medium text-muted transition-colors outline-none hover:bg-surface-hover hover:text-secondary disabled:opacity-50"
       : "rounded p-0.5 text-muted transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50";
-
-    if (isInSync && !isManaged) return null;
 
     return (
       <>
@@ -1040,4 +1047,3 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
     </div>
   );
 }
-

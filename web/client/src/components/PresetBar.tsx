@@ -38,11 +38,6 @@ export function PresetBar({
     return map;
   }, [presets, managedSkills, agentKeys, existsInWorkspace]);
 
-  const visiblePresets = useMemo(
-    () => presets.filter((p) => statuses.get(p.id)?.status !== "empty"),
-    [presets, statuses]
-  );
-
   const handleActivate = useCallback(async (preset: Preset) => {
     setLoadingKey(`${preset.id}-add`);
     try {
@@ -95,7 +90,7 @@ export function PresetBar({
     }
   }, [agentKeys, existsInWorkspace, managedSkills, onComplete, onRemoveSkill, t]);
 
-  if (visiblePresets.length === 0) return null;
+  if (presets.length === 0) return null;
 
   const busy = loadingKey !== null;
 
@@ -103,7 +98,7 @@ export function PresetBar({
     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
       <span className="shrink-0 text-[12px] text-muted">{t("sidebar.presets")}</span>
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-hide">
-        {visiblePresets.map((preset) => {
+        {presets.map((preset) => {
           const s = statuses.get(preset.id)!;
           const presetIcon = getPresetIconOption(preset);
           const Icon = presetIcon.icon;

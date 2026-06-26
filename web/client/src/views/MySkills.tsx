@@ -140,7 +140,7 @@ export function MySkills() {
     refreshProjects,
   } = useApp();
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
-  const [filterMode, setFilterMode] = useState<"all" | "enabled" | "available">("all");
+  const [filterMode, setFilterMode] = useState<"all" | "enabled" | "available">("enabled");
   const [sourceFilters, setSourceFilters] = useState<Set<string>>(new Set());
   const [tagFilters, setTagFilters] = useState<Set<string>>(new Set());
   const [allTags, setAllTags] = useState<string[]>([]);
@@ -179,6 +179,14 @@ export function MySkills() {
   const [presetSkillOrder, setPresetSkillOrder] = useState<string[]>([]);
 
   const viewedPresetName = viewedPreset?.name || t("mySkills.currentPresetFallback");
+  const viewedPresetId = viewedPreset?.id ?? null;
+  const previousViewedPresetIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (previousViewedPresetIdRef.current === viewedPresetId) return;
+    previousViewedPresetIdRef.current = viewedPresetId;
+    setFilterMode(viewedPresetId ? "enabled" : "all");
+  }, [viewedPresetId]);
 
   // Fetch sort order whenever active preset changes
   useEffect(() => {

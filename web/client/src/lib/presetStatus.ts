@@ -15,8 +15,14 @@ export function computePresetStatus(
   existsInWorkspace: (skill: ManagedSkill, agentKey: string) => boolean
 ): PresetStatusResult {
   const presetSkills = skills.filter((s) => s.preset_ids.includes(preset.id));
-  if (presetSkills.length === 0 || agentKeys.length === 0) {
+  if (agentKeys.length === 0) {
     return { status: "empty", installed: 0, total: 0 };
+  }
+  if (presetSkills.length === 0) {
+    const total = preset.skill_count * agentKeys.length;
+    return total > 0
+      ? { status: "inactive", installed: 0, total }
+      : { status: "empty", installed: 0, total: 0 };
   }
   const total = presetSkills.length * agentKeys.length;
   let installed = 0;

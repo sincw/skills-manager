@@ -79,7 +79,6 @@ pub fn has_complete_skill_snapshot() -> bool {
     metadata_dir().join("schema.json").is_file() && metadata_dir().join("skills").is_dir()
 }
 
-#[allow(dead_code)]
 pub fn write_all_from_db(store: &SkillStore) -> Result<()> {
     let _lock = RepoLock::acquire("write sync metadata")?;
     write_all_from_db_unlocked(store)
@@ -113,7 +112,6 @@ pub(crate) fn write_all_from_db_unlocked(store: &SkillStore) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn reindex_from_metadata(store: &SkillStore) -> Result<()> {
     let _lock = RepoLock::acquire("reindex sync metadata")?;
     reindex_from_metadata_unlocked(store)?;
@@ -356,7 +354,6 @@ fn hash_bytes(hasher: &mut Sha256, bytes: &[u8]) {
     hasher.update(bytes);
 }
 
-#[allow(dead_code)]
 pub fn ensure_skill_metadata(store: &SkillStore, skill_id: &str) -> Result<()> {
     let _lock = RepoLock::acquire("write skill metadata")?;
     ensure_skill_metadata_unlocked(store, skill_id)

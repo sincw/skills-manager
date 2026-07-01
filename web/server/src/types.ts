@@ -20,7 +20,7 @@ export interface ServerConfig {
 export interface CliRunOptions {
   timeoutMs?: number;
   write?: boolean;
-  cwd?: string;
+  cwd?: string; // ponytail: dead, no callers set this
 }
 
 export interface CliResult {
@@ -34,7 +34,7 @@ export interface CliResult {
   stderr: string;
 }
 
-export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
+export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 
 export interface JobRecord {
   id: string;

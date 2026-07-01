@@ -74,7 +74,6 @@ async function runCliAttempt(
 
   return new Promise((resolve) => {
     const child = spawn(command[0], command.slice(1), {
-      cwd: options.cwd,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });

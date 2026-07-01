@@ -45,14 +45,6 @@ impl AppError {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn cancelled(msg: impl Into<String>) -> Self {
-        Self {
-            kind: ErrorKind::Cancelled,
-            message: msg.into(),
-        }
-    }
-
     /// Convert an `anyhow::Error` originating from database operations.
     pub fn db(e: impl fmt::Display) -> Self {
         Self {
@@ -177,10 +169,6 @@ mod tests {
         assert!(matches!(
             AppError::invalid_input("x").kind,
             ErrorKind::InvalidInput
-        ));
-        assert!(matches!(
-            AppError::cancelled("x").kind,
-            ErrorKind::Cancelled
         ));
         assert!(matches!(AppError::db("x").kind, ErrorKind::Database));
         assert!(matches!(AppError::git("x").kind, ErrorKind::Git));

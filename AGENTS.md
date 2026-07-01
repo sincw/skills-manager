@@ -1,3 +1,6 @@
+## Core Rule
+working language is Chinese
+
 ## Agent skills
 
 ### Issue tracker

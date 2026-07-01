@@ -31,14 +31,13 @@
 - `web/server/src/routes.ts` 是 Web API 主路由表，覆盖 repo、tools、skills、presets、workspaces、projects、git 和 operations。
 - `web/server/src/cli.ts` 是 Web 调 CLI 的唯一 argv builder 和执行队列入口。
 - `web/server/src/config.ts` 是 Web server 环境变量和数据目录入口。
-- `web/client/src/main.tsx` 是浏览器入口，注册核心 UI 路由和 `/web/*` 控制台路由。
-- `web/client/src/App.tsx` 保留旧核心 UI 的 BrowserRouter 入口；当前 Vite 入口使用 `main.tsx`。
+- `web/client/src/main.tsx` 是浏览器入口，注册核心 UI 路由和 `/web/*` 控制台路由（旧 `App.tsx` 已删除）。
 - `web/client/vite.config.ts` 配置 React plugin、Tauri import browser shims、Vite 端口和 `/api` proxy。
 - `web/client/eslint.config.js` lint 当前主要覆盖 `/web/*` 控制台与少量共享文件，旧核心 UI 多数目录被排除。
 - `web/client/src/lib/tauri.ts` 是浏览器 HTTP adapter，保留旧 Tauri adapter 的公开函数形状。
 - `web/client/src/context/AppContext.tsx` 驱动核心 UI 数据加载；`web/client/src/web/WebAppContext.tsx` 驱动 `/web/*` 控制台数据加载。
 - Rust 单元测试内联在 `cli/src/core/*`；Web server 测试在 `web/server/test/*`。
-- `loop/afk.sh` 是本地 AFK issue loop 入口，要求 clean tree、读取 issue markdown，并用 `codex exec --sandbox danger-full-access -c approval_policy=never` 运行迭代。
+- `loop/afk.sh` 是本地 AFK issue loop 入口，读取 issue markdown，按 `AGENT=codex|pi`（默认 codex）选择 runner，每轮 stash 恢复上一轮遗留的 dirty tree 而非直接退出，codex 用 `approval_policy=never`、pi 用 `pi -p --approve --no-session`；详细用法见 `loop/readme.md`。
 
 ## Stable Flows
 
@@ -49,6 +48,7 @@
 - local install 流：CLI classify ref -> `installer::install_from_local` -> `skill_actions::store_installed_skill_unlocked` -> DB + sync metadata -> optional active preset sync。
 - git install 流：CLI validate/parse Git URL -> `git_fetcher` clone/resolve subpath -> `installer` copy to center -> `skill_actions` write source metadata -> optional sync。
 - skills.sh install 流：shorthand -> GitHub repo clone -> skill dir resolution -> collision-safe install target -> same store/sync boundary as git install。
+- batch import 流：`skills adopt <dir>` 经 `scanner::collect_skill_dirs_with_max_depth`（默认 max_depth=1，发现子目录与孙目录）分类候选，可选 `--git-url` 把单个候选登记为 git 源，再走 install store/sync 边界；`install --local` 对非 skill 父目录会拒绝并提示改用 `skills adopt`。
 - update flow：`skill_actions::update_git_skill_internal` resolves remote revision, stages updated directory, swaps atomically, refreshes source metadata, then resyncs copy-mode targets。
 - local reimport flow：`skill_actions::reimport_local_skill_internal` reads original source path, stages reinstall, swaps central directory, updates DB, then resyncs copy targets。
 - check flow：git/skills.sh sources compare remote revision; local/import sources compare content hash or mark missing source; TTL is read from settings unless forced。
@@ -103,7 +103,7 @@
 - `tool_service` owns disabled tools, tool order, custom path settings, and `ToolInfo` projection.
 - `content_hash` is the stable directory hash seam; update/check/sync skip behavior depends on it.
 - `crypto` encrypts sensitive setting values such as proxy URL and git backup remote URL.
-- `path_guard`, `validation.ts`, and archive extraction guard filesystem/path inputs at different layers; prefer them over local string checks.
+- `skill_metadata::sanitize_skill_name`、`validation.ts` 和 `installer` 的 archive 提取在 Rust/Web 不同层守护 filesystem/path 输入；优先复用而非局部字符串检查（已删除的 `path_guard` 不再是 seam）。
 - `audit_log` and `SkillStore::log_audit` are the Rust audit seam for core skill actions.
 - `Workspace`: CLI `workspaces` and Web workspace/project routes enter through `workspace_service`; it owns registered workspace DTOs, legacy registry import, sync health enrichment, global workspace sync/unsync/delete, and project/linked export/delete semantics.
 - `workspace_service` delegates workspace directory discovery to `project_scanner`, tool/global/project paths to `tool_adapters` and `tool_service`, central skill resolution to `SkillStore`, and filesystem copy/remove to `sync_engine`.
@@ -116,6 +116,7 @@
 - `web/server/src/cli.ts` owns CLI stdout/stderr JSON extraction, truncation, timeout, serialization, and busy-retry policy.
 - `web/server/src/types.ts` owns server-side JSON envelope and operation/job record types.
 - `web/client/src/lib/tauri.ts` is the main client API seam; old views should call it instead of `fetch` directly, and workspace write functions wait for queued Web jobs before resolving.
+- `web/client/src/views/installLocalPathFallback.ts` 是浏览器本地导入路径选择的 fallback seam：当 Tauri dialog 在浏览器返回 null 时，`resolveLocalPathSelection` 路由到 `DirectoryPickerDialog` 手动输入路径，覆盖 folder/archive/batch 三种模式。
 - `web/client/src/lib/browser-shims.ts` satisfies retained Tauri imports in browser builds.
 - `web/client/src/i18n/index.ts` initializes i18next and reads language preference through the client adapter.
 - `web/client/src/views/workspaceConfigs.ts` selects coding vs lobster workspace groups for core UI.

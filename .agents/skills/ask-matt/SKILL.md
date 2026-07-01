@@ -20,8 +20,23 @@ The route most work travels. You have an idea and want it built.
    - **`/prototype`** to answer the question with throwaway code,
    - **`/handoff`** back what you learned, and reference it from the original idea thread.
 3. **Branch — is this a multi-session build?**
-   - **Yes** → **`/to-prd`** (turn the thread into a PRD) → **`/to-issues`** (split the PRD into independently-grabbable issues). Then choose an issue execution mode: manual fresh sessions, or the AFK loop when the queue is ready for unattended work (see Issue execution modes).
+   - **Yes** → **`/to-prd`** (turn the thread into a PRD) → **`/read-across`** (cross-check the PRD with two independent reviewer models — consistency, completeness, feasibility, risk, stakeholder coverage; escalate blockers before any issue work starts) → **`/to-issues`** (split the PRD into independently-grabbable issues). Then choose an issue execution mode: manual fresh sessions, or the AFK loop when the queue is ready for unattended work (see Issue execution modes).
    - **No** → **`/implement`** right here, in the same context window.
+
+### PRD cross-check — after `/to-prd`, before `/to-issues`
+
+Run **`/read-across`** on the PRD right after it's drafted. Two independent reviewer sub-agents (Kimi K2.7 + GLM-5.2) audit it on consistency, completeness, feasibility, risk, and stakeholder coverage, then the parent agent arbitrates. Escalate any blocker before splitting issues — a PRD with an unresolved blocker produces issues that inherit the defect. Findings land in `.scratch/reviews/` and blocker/warning items can be converted into issues or triage labels. Skip only for trivial PRDs the user explicitly waives.
+
+### Frontend design phase — don't skip when UI is visible
+
+Between `/read-across` and `/implement` (or `/to-issues`), if the feature has **significant user-visible UI** and the visual direction is not yet locked, run **`/to-ui`** first. This is the node that prevents the "functional but ugly" trap: when every design choice is made in isolation during coding, with no alternatives compared and no human visual judgment early, the UI comes out ugly.
+
+- Generate 4–6 single-file HTML mockup variants with genuinely different directions (layout, density, information hierarchy, interaction model — not color/spacing tweaks). Apply the **`/frontend-design`** skill per variant for intentional, non-templated aesthetics.
+- Side-by-side `board.html`, collect human feedback into `feedback.md`, iterate 1–3 rounds.
+- Converge on `winner.html` + `ui-spec.md`; archive discarded variants (label `DEPRECATED`).
+- `/implement` then treats `ui-spec.md` as the **UI truth source** and maps its component inventory to real components. It must not read archived variants — those are not design input.
+
+Skip `/to-ui` when: pure backend, pure data/script/migration, or the PRD explicitly says "reuse existing UI, no visual change".
 
 ### Context hygiene
 
@@ -50,6 +65,12 @@ Not feature work — upkeep.
 
 - **`/improve-codebase-architecture`** — run whenever you have a spare moment to keep the codebase good for agents to operate in. It surfaces deepening opportunities; picking one _generates an idea_ you can take into the main flow at `/grilling`.
 
+## Codebase navigation
+
+Not feature work — durable orientation.
+
+- **`/codebase-map`** — run manually when you want to bootstrap or refresh `docs/agents/codebase-map/codebase-map.md`, the stable navigation map for future codebase-bound sessions. It reviews source drift and updates the map only when durable navigation facts changed.
+
 ## Crossing sessions
 
 - **`/handoff`** — when a thread is full or you need to branch off (e.g. into a `/prototype` session), this compacts the conversation into a markdown file. You don't continue in place — you **open a new session and reference that file** to carry the context across. It's the bridge between context windows, in either direction. Use it when you want a **fresh session** but need the **current conversation preserved**.
@@ -60,8 +81,6 @@ Not feature work — upkeep.
 Off the main flow entirely.
 
 - **`/grilling`** — use it standalone to sharpen any plan or design that does not live in a repo. In this branch it saves nothing locally and builds no `CONTEXT.md`.
+- **`/read-across`** — use it standalone to cross-review any artifact (PRD, code, architecture, config, document) with two independent reviewer models.
 - **`/writing-great-skills`** — reference for writing and editing skills well.
 
-## Precondition
-
-**`/setup-matt-pocock-skills`** — run before your first engineering flow to configure the issue tracker, triage labels, and doc layout the other skills assume. Custom issue trackers also work.

@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 Implement the work described by the user in the PRD or issues.
 
+If a `ui-spec.md` exists for this feature (from `/to-ui`), treat it as the UI truth source: map its component inventory to real components, cover its key states (loading/empty/error/submitting/permission-denied). Do not read archived variants — those are not design input.
+
 Use /tdd where possible, at pre-agreed seams.
 
 Run typechecking regularly, single test files regularly, and the full test suite once at the end.

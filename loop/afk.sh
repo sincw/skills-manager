@@ -4,15 +4,22 @@ set -euo pipefail
 if [ -z "${1:-}" ] || [ -z "${2:-}" ]; then
   echo "Usage: $0 <iterations> <issues_path> [prompt_path]"
   echo "Example: $0 10 .scratch/task-manager/issues"
+  echo "Env: AGENT=codex|pi  (default codex)"
   exit 1
 fi
 
 iterations="$1"
 issues_path="$2"
 prompt_path="${3:-loop/prompt.md}"
+agent="${AGENT:-codex}"
 
-if ! command -v codex >/dev/null 2>&1; then
-  echo "codex CLI not found on PATH"
+case "$agent" in
+  codex|pi) ;;
+  *) echo "Unknown AGENT '$agent'; use codex or pi"; exit 1 ;;
+esac
+
+if ! command -v "$agent" >/dev/null 2>&1; then
+  echo "$agent CLI not found on PATH"
   exit 1
 fi
 
@@ -33,14 +40,47 @@ fi
 
 mkdir -p "$issues_path/done"
 
-for ((i=1; i<=iterations; i++)); do
+# Recover any leftover workspace state from the previous iteration
+# (agent may have exited mid-task before committing). Stash rather than die,
+# so one dirty iteration does not end the whole batch.
+recover_workspace() {
   if [ -n "$(git status --short)" ]; then
-    echo "Working tree is not clean. Commit or stash changes before continuing."
+    echo "Working tree dirty from previous iteration; stashing leftover."
     git status --short
-    exit 1
+    git stash push --include-untracked -m "loop-leftover-iter-$i" >/dev/null || {
+      echo "stash failed iter $i; continuing with dirty tree"
+    }
   fi
+}
 
-  tmpfile=$(mktemp)
+# Run one agent iteration. Prints final message to stdout (captured by caller).
+run_agent() {
+  local full_prompt="$1"
+  case "$agent" in
+    codex)
+      local tmpfile
+      tmpfile=$(mktemp)
+      codex exec -c approval_policy=never \
+        -c 'model_reasoning_effort="high"' \
+        --output-last-message "$tmpfile" \
+        "$full_prompt"
+      local rc=$?
+      cat "$tmpfile" 2>/dev/null || true
+      rm -f "$tmpfile"
+      return $rc
+      ;;
+    pi)
+      # ponytail: -p prints final message to stdout directly; --approve trusts project files;
+      # --no-session keeps it ephemeral (loop drives state via git, not session files).
+      pi -p --approve --no-session \
+        --thinking high \
+        "$full_prompt"
+      ;;
+  esac
+}
+
+for ((i=1; i<=iterations; i++)); do
+  recover_workspace
 
   commits=$(git log -n 5 --format="%H%n%ad%n%B---" --date=short 2>/dev/null || echo "No commits found")
   issues=$(
@@ -48,30 +88,27 @@ for ((i=1; i<=iterations; i++)); do
       printf "\n--- ISSUE FILE: %s ---\n" "$issue"
       sed -n "1,260p" "$issue"
     done
-  )
+  ) || issues=""
   if [ -z "$issues" ]; then
     issues="No issues found"
   fi
   prompt=$(cat "$prompt_path")
   before_head=$(git rev-parse HEAD 2>/dev/null || echo "NO_HEAD")
 
-  if ! codex exec -c approval_policy=never \
-    -c 'model_reasoning_effort="high"' \
-    --output-last-message "$tmpfile" \
-    "Previous commits:
+  full_prompt="Previous commits:
 $commits
 
 Issues directory: $issues_path
 Issues:
 $issues
 
-$prompt"; then
-    rm -f "$tmpfile"
-    exit 1
-  fi
+$prompt"
 
-  result=$(cat "$tmpfile")
-  rm -f "$tmpfile"
+  if ! result=$(run_agent "$full_prompt"); then
+    echo "$agent failed in iteration $i; recovering workspace and continuing."
+    recover_workspace
+    continue
+  fi
 
   if [[ "$result" == *"<promise>NO MORE TASKS</promise>"* ]]; then
     echo "Ralph complete after $i iterations."

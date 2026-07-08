@@ -133,7 +133,7 @@ Implementation phase should:
 ## Output Structure
 
 ```
-.ai/design-ui/<feature>/
+.scratch/<feature>/ui/
 ├── board.html          # Side-by-side comparison board
 ├── variants/           # Active candidate HTML mockups
 │   ├── 01-high-density-table.html

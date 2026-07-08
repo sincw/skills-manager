@@ -7,6 +7,8 @@ working language is Chinese
 
 Issues and PRDs are tracked as local markdown under `.scratch/`; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
 
+Feature dir naming: `.scratch/<YYMMDD>_<feature>/` — YYMMDD = creation date. `<feature>` in templates uses this form.
+
 ### Triage labels
 
 Uses the default canonical triage label strings. See `docs/agents/triage-labels.md`.

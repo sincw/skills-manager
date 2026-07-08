@@ -20,7 +20,7 @@ The route most work travels. You have an idea and want it built.
    - **`/prototype`** to answer the question with throwaway code,
    - **`/handoff`** back what you learned, and reference it from the original idea thread.
 3. **Branch — is this a multi-session build?**
-   - **Yes** → **`/to-prd`** (turn the thread into a PRD) → **`/read-across`** (cross-check the PRD with two independent reviewer models — consistency, completeness, feasibility, risk, stakeholder coverage; escalate blockers before any issue work starts) → **`/to-issues`** (split the PRD into independently-grabbable issues). Then choose an issue execution mode: manual fresh sessions, or the AFK loop when the queue is ready for unattended work (see Issue execution modes).
+   - **Yes** → **`/to-prd`** (turn the thread into a PRD) → **`/read-across`** (cross-check the PRD — see PRD cross-check below) → **`/to-issues`** (split the PRD into AFK-max packages — independently-grabbable issues, one per AFK loop iteration). Then choose an issue execution mode (see below).
    - **No** → **`/implement`** right here, in the same context window.
 
 ### PRD cross-check — after `/to-prd`, before `/to-issues`
@@ -63,7 +63,7 @@ A starting situation that generates work, then merges onto the main flow.
 
 Not feature work — upkeep.
 
-- **`/improve-codebase-architecture`** — run whenever you have a spare moment to keep the codebase good for agents to operate in. It surfaces deepening opportunities; picking one _generates an idea_ you can take into the main flow at `/grilling`.
+- **`/improve-codebase-architecture`** — run whenever you have a spare moment to keep the codebase good for agents to operate in. It surfaces deepening opportunities; picking one runs `/grilling` inline, after which the resulting idea enters the main flow.
 
 ## Codebase navigation
 

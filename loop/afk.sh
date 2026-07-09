@@ -72,8 +72,13 @@ run_agent() {
     pi)
       # ponytail: -p prints final message to stdout directly; --approve trusts project files;
       # --no-session keeps it ephemeral (loop drives state via git, not session files).
+      # Use PI_PROVIDER / PI_MODEL env vars to override provider and model.
+      local pi_model_args=()
+      [ -n "${PI_PROVIDER:-}" ] && pi_model_args+=(--provider "$PI_PROVIDER")
+      [ -n "${PI_MODEL:-}" ] && pi_model_args+=(--model "$PI_MODEL")
       pi -p --approve --no-session \
         --thinking high \
+        "${pi_model_args[@]}" \
         "$full_prompt"
       ;;
   esac

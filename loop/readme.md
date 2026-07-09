@@ -44,7 +44,7 @@ loop/afk.sh 5 .scratch/task-manager/issues loop/prompt.md
 1. 检查 git 工作区是否干净。
 2. 读取最近 5 个 commit，帮助 agent 避免重复工作。
 3. 读取 issue 目录第一层的所有 `.md` 文件。
-4. 将 issue、commit 历史和 prompt 一起传给 `codex exec`。
+4. 将 issue、commit 历史和 prompt 一起传给 agent（`codex exec` 或 `pi -p`）。
 5. 要求 agent 只选择并完成一个任务。
 6. 期望本轮产生一个新的 git commit。
 
@@ -69,9 +69,8 @@ loop 会在以下情况停止：
 ```
 
 - 某一轮没有产生新的 commit。
-- 运行前或轮次之间发现工作区不干净。
 - issue 目录或 prompt 文件不存在。
-- `codex` CLI 不可用。
+- 指定的 agent CLI 不可用。
 
 ## 推荐流程
 
@@ -81,7 +80,7 @@ loop 会在以下情况停止：
 → /to-issues
 → 确认 issue 独立且标为 ready-for-agent
 → 确认 git 工作区干净
-→ loop/afk.sh 5 .scratch/<feature>/issues
+→ loop/afk.sh N .scratch/<feature>/issues
 ```
 
 loop 适合执行已经准备好的队列，不适合替代前面的设计和拆分步骤。

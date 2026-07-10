@@ -72,12 +72,13 @@ run_agent() {
     pi)
       # ponytail: -p prints final message to stdout directly; --approve trusts project files;
       # --no-session keeps it ephemeral (loop drives state via git, not session files).
-      # Use PI_PROVIDER / PI_MODEL env vars to override provider and model.
+      # Use PI_PROVIDER / PI_MODEL / PI_THINKING env vars to control pi behaviour.
       local pi_model_args=()
+      local pi_thinking="${PI_THINKING:-high}"
       [ -n "${PI_PROVIDER:-}" ] && pi_model_args+=(--provider "$PI_PROVIDER")
       [ -n "${PI_MODEL:-}" ] && pi_model_args+=(--model "$PI_MODEL")
       pi -p --approve --no-session \
-        --thinking high \
+        --thinking "$pi_thinking" \
         "${pi_model_args[@]}" \
         "$full_prompt"
       ;;
@@ -109,8 +110,11 @@ $issues
 
 $prompt"
 
-  if ! result=$(run_agent "$full_prompt"); then
-    echo "$agent failed in iteration $i; recovering workspace and continuing."
+  result=$(run_agent "$full_prompt") && agent_rc=0 || agent_rc=$?
+  if [ "$agent_rc" -ne 0 ]; then
+    echo "$agent failed in iteration $i (exit code $agent_rc); recovering workspace and continuing."
+    echo "Agent output:"
+    echo "$result" | tail -50
     recover_workspace
     continue
   fi

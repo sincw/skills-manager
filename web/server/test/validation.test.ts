@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   expandLinuxPath,
+  MCP_CONTENT_MAX_BYTES,
+  mcpContent,
+  mcpOutputFormat,
   requireConfirm,
   stringArray,
   validateGitUrl,
@@ -33,5 +36,22 @@ describe("validation", () => {
     expect(stringArray(["a", "b"], "refs")).toEqual(["a", "b"]);
     expect(() => stringArray([], "refs")).toThrow("must not be empty");
     expect(() => stringArray("a", "refs")).toThrow("must be an array");
+  });
+
+  it("accepts mcp content under the 64KB limit", () => {
+    const content = '[mcp_servers.weather]\ncommand = "uvx"\n';
+    expect(mcpContent(content)).toBe(content);
+  });
+
+  it("rejects mcp content over 64KB", () => {
+    const oversized = "x".repeat(MCP_CONTENT_MAX_BYTES + 1);
+    expect(() => mcpContent(oversized)).toThrow("exceeds");
+  });
+
+  it("validates mcp output format enum", () => {
+    expect(mcpOutputFormat("toml")).toBe("toml");
+    expect(mcpOutputFormat("JSON")).toBe("json");
+    expect(() => mcpOutputFormat("yaml")).toThrow('must be "toml" or "json"');
+    expect(() => mcpOutputFormat("")).toThrow("required");
   });
 });

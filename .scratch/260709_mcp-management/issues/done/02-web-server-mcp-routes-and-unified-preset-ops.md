@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 ## What to build
 
@@ -58,3 +58,15 @@ All MCP write operations and the unified `apply` / `deactivate` routes go throug
 ## Blocked by
 
 - `.scratch/260709_mcp-management/issues/01-cli-core-mcp-library-lifecycle-and-sync.md` (the CLI `mcp` and `presets` subcommands this server invokes)
+
+## Comments
+
+### 2026-07-09 — AFK completion
+
+Status: done
+
+Completed Web server MCP routes + unified preset apply/deactivate:
+- CLI `tools set-mcp` seam for MCP output dir/format overrides (needed by PUT /api/tools/:key/mcp)
+- Routes: /api/mcp/* lifecycle, /api/presets/:ref/mcp membership, /api/presets/deactivate body schema, PUT /api/tools/:key/mcp with enum + supported_mcp_formats guard
+- 64KB content limit enforced server-side before CLI; WriteJobQueue for all MCP writes and unified apply/deactivate
+- Tests: web/server routes + validation; cargo tests for set_tool_mcp_settings

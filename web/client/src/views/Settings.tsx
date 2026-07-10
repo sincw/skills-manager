@@ -196,6 +196,10 @@ export function Settings() {
   // Project path editing (custom agents only)
   const [editingProjectPathKey, setEditingProjectPathKey] = useState<string | null>(null);
   const [editingProjectPathValue, setEditingProjectPathValue] = useState("");
+  // MCP output dir / format editing
+  const [editingMcpPathKey, setEditingMcpPathKey] = useState<string | null>(null);
+  const [editingMcpPathValue, setEditingMcpPathValue] = useState("");
+  const [savingMcpKey, setSavingMcpKey] = useState<string | null>(null);
   // Custom agent dialog
   const [showAddCustom, setShowAddCustom] = useState(false);
   const [customName, setCustomName] = useState("");
@@ -266,6 +270,56 @@ export function Settings() {
     const selected = await dialogOpen({ directory: true, multiple: false });
     if (selected && typeof selected === "string") {
       setter(selected);
+    }
+  };
+
+  const startEditMcpPath = useCallback((key: string, currentPath: string | null | undefined) => {
+    setEditingMcpPathKey(key);
+    setEditingMcpPathValue(currentPath ?? "");
+  }, []);
+
+  const handleSaveMcpPath = async () => {
+    if (!editingMcpPathKey || !editingMcpPathValue.trim()) return;
+    setSavingMcpKey(editingMcpPathKey);
+    try {
+      await api.setToolMcpSettings(editingMcpPathKey, {
+        mcp_output_dir: editingMcpPathValue.trim(),
+      });
+      await refreshTools();
+      toast.success(t("settings.mcpPathSaved"));
+      setEditingMcpPathKey(null);
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setSavingMcpKey(null);
+    }
+  };
+
+  const handleMcpFormatChange = async (key: string, format: string) => {
+    setSavingMcpKey(key);
+    try {
+      await api.setToolMcpSettings(key, { mcp_output_format: format });
+      await refreshTools();
+      toast.success(t("settings.mcpFormatSaved"));
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setSavingMcpKey(null);
+    }
+  };
+
+  const handleMcpSupportToggle = async (key: string, enabled: boolean) => {
+    setSavingMcpKey(key);
+    try {
+      await api.setToolMcpSupport(key, enabled);
+      await refreshTools();
+      toast.success(
+        enabled ? t("settings.mcpSupportEnabled") : t("settings.mcpSupportDisabled"),
+      );
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setSavingMcpKey(null);
     }
   };
 
@@ -738,13 +792,32 @@ export function Settings() {
   );
   const customTools = useMemo(() => tools.filter((tool) => tool.is_custom), [tools]);
   const builtInTools = useMemo(() => tools.filter((tool) => !tool.is_custom), [tools]);
+
+  // Prefer enabled + MCP-on agents first so the denser MCP cards cluster together
+  // and the grid looks less broken by mixed card heights.
+  const rankAgentCard = useCallback((tool: api.ToolInfo) => {
+    let score = 0;
+    if (tool.installed) score += 4;
+    if (tool.enabled) score += 2;
+    if (tool.supports_mcp_profile) score += 1;
+    return -score;
+  }, []);
+
   const mainstreamTools = useMemo(
-    () => builtInTools.filter((tool) => MAINSTREAM_AGENT_KEYS.has(tool.key)),
-    [builtInTools]
+    () =>
+      builtInTools
+        .filter((tool) => MAINSTREAM_AGENT_KEYS.has(tool.key))
+        .slice()
+        .sort((a, b) => rankAgentCard(a) - rankAgentCard(b) || a.key.localeCompare(b.key)),
+    [builtInTools, rankAgentCard]
   );
   const secondaryTools = useMemo(
-    () => builtInTools.filter((tool) => !MAINSTREAM_AGENT_KEYS.has(tool.key)),
-    [builtInTools]
+    () =>
+      builtInTools
+        .filter((tool) => !MAINSTREAM_AGENT_KEYS.has(tool.key))
+        .slice()
+        .sort((a, b) => rankAgentCard(a) - rankAgentCard(b) || a.key.localeCompare(b.key)),
+    [builtInTools, rankAgentCard]
   );
 
   const dragSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -781,7 +854,7 @@ export function Settings() {
   const renderAgentCard = (agent: typeof tools[number], dragHandle?: React.ReactNode) => (
     <div
       className={cn(
-        "group relative flex flex-col gap-1.5 rounded-[6px] border px-3 py-2.5 transition-colors",
+        "group relative flex h-full min-h-[148px] flex-col gap-1.5 rounded-[6px] border px-3 py-2.5 transition-colors",
         agent.installed && agent.enabled
           ? "border-border bg-surface"
           : agent.installed
@@ -1021,6 +1094,177 @@ export function Settings() {
               )}
             </div>
           ))}
+
+        {/* MCP support + output directory + format.
+            Always reserve the same block height for installed agents so the grid stays aligned. */}
+        {agent.installed && (
+          <div className="mt-auto space-y-1.5 border-t border-border-subtle/60 pt-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[12px] font-medium text-secondary">
+                {t("settings.mcpSupport")}
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={agent.supports_mcp_profile === true}
+                disabled={savingMcpKey === agent.key}
+                onClick={() =>
+                  void handleMcpSupportToggle(
+                    agent.key,
+                    !(agent.supports_mcp_profile === true),
+                  )
+                }
+                title={
+                  agent.supports_mcp_profile
+                    ? t("settings.mcpSupportOn")
+                    : t("settings.mcpSupportOff")
+                }
+                className={cn(
+                  "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50",
+                  agent.supports_mcp_profile ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600",
+                  savingMcpKey === agent.key ? "cursor-wait" : "cursor-pointer",
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-flex h-3 w-3 items-center justify-center rounded-full bg-white shadow transition-transform",
+                    agent.supports_mcp_profile ? "translate-x-3.5" : "translate-x-0.5",
+                  )}
+                />
+              </button>
+            </div>
+
+            {editingMcpPathKey === agent.key && agent.supports_mcp_profile ? (
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  value={editingMcpPathValue}
+                  onChange={(e) => setEditingMcpPathValue(e.target.value)}
+                  placeholder={t("settings.mcpOutputDirPlaceholder")}
+                  className="h-7 min-w-0 flex-1 rounded border border-border-subtle bg-background px-1.5 text-[12px] font-mono text-secondary outline-none focus:border-accent"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void handleSaveMcpPath();
+                    if (e.key === "Escape") setEditingMcpPathKey(null);
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => handleBrowsePath(setEditingMcpPathValue)}
+                  className="shrink-0 p-1 text-muted hover:text-accent outline-none"
+                  title={t("settings.selectFolder")}
+                >
+                  <FolderOpen className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSaveMcpPath()}
+                  disabled={savingMcpKey === agent.key}
+                  className="shrink-0 p-1 text-emerald-500 hover:text-emerald-400 outline-none"
+                >
+                  <Check className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingMcpPathKey(null)}
+                  className="shrink-0 p-1 text-muted hover:text-secondary outline-none"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex min-h-[20px] items-center gap-1">
+                <p
+                  className={cn(
+                    "min-w-0 flex-1 truncate text-[12px] font-mono leading-tight",
+                    agent.supports_mcp_profile ? "text-muted" : "text-faint",
+                  )}
+                  title={
+                    agent.supports_mcp_profile
+                      ? agent.mcp_output_dir ?? t("settings.mcpOutputDirEmpty")
+                      : t("settings.mcpSupportOff")
+                  }
+                >
+                  <span className="mr-1 text-[10px] font-sans font-semibold uppercase tracking-wide text-faint">
+                    {t("settings.mcpOutputDir")}
+                  </span>
+                  {agent.supports_mcp_profile
+                    ? agent.mcp_output_dir
+                      ? compactHomePath(agent.mcp_output_dir)
+                      : t("settings.mcpOutputDirEmpty")
+                    : "—"}
+                </p>
+                {agent.supports_mcp_profile ? (
+                  <button
+                    type="button"
+                    onClick={() => startEditMcpPath(agent.key, agent.mcp_output_dir)}
+                    className="shrink-0 p-0.5 text-muted hover:text-accent outline-none opacity-0 transition-opacity group-hover:opacity-100"
+                    title={t("settings.editPath")}
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </button>
+                ) : null}
+              </div>
+            )}
+
+            <div className="flex min-h-[28px] flex-wrap items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-faint">
+                {t("settings.mcpOutputFormat")}
+              </span>
+              {agent.supports_mcp_profile ? (
+                <select
+                  className="h-7 rounded border border-border-subtle bg-background px-1.5 text-[12px] text-secondary outline-none focus:border-accent"
+                  value={agent.mcp_output_format ?? "toml"}
+                  disabled={savingMcpKey === agent.key}
+                  onChange={(e) => void handleMcpFormatChange(agent.key, e.target.value)}
+                >
+                  {["toml", "json"].map((fmt) => (
+                    <option key={fmt} value={fmt}>
+                      {fmt.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="text-[12px] text-faint">—</span>
+              )}
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-faint">
+                {t("settings.mcpFilename")}
+              </span>
+              {agent.supports_mcp_profile ? (
+                <input
+                  type="text"
+                  className="h-7 w-[120px] rounded border border-border-subtle bg-background px-1.5 text-[12px] font-mono text-secondary outline-none focus:border-accent"
+                  value={agent.mcp_output_filename ?? ""}
+                  disabled={savingMcpKey === agent.key}
+                  placeholder={agent.mcp_output_filename
+                    ? "自定义文件名"
+                    : `{preset}.config.${agent.mcp_output_format ?? "toml"}`}
+                  onBlur={(e) => {
+                    const val = e.target.value.trim();
+                    if (val !== (agent.mcp_output_filename ?? "")) {
+                      void (async () => {
+                        setSavingMcpKey(agent.key);
+                        try {
+                          await api.setToolMcpFilename(agent.key, val || undefined);
+                          await refreshTools();
+                        } catch (err) {
+                          toast.error(String(err));
+                        } finally {
+                          setSavingMcpKey(null);
+                        }
+                      })();
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  }}
+                />
+              ) : (
+                <span className="text-[12px] text-faint">—</span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

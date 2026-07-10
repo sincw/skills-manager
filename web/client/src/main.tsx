@@ -11,6 +11,7 @@ import { CloseActionGuard } from "./components/CloseActionGuard";
 import { Layout } from "./components/Layout";
 import { Dashboard } from "./views/Dashboard";
 import { MySkills } from "./views/MySkills";
+import { McpLibrary } from "./views/McpLibrary";
 import { WorkspaceView } from "./views/WorkspaceView";
 import { CODING_WORKSPACE_CONFIG, LOBSTER_WORKSPACE_CONFIG } from "./views/workspaceConfigs";
 import { InstallSkills } from "./views/InstallSkills";
@@ -19,6 +20,7 @@ import { ProjectDetail } from "./views/ProjectDetail";
 import { WebShell } from "./web/WebShell";
 import { DashboardPage } from "./web/DashboardPage";
 import { SkillsPage } from "./web/SkillsPage";
+import { McpPage } from "./web/McpPage";
 import { PresetsPage } from "./web/PresetsPage";
 import { ToolsPage } from "./web/ToolsPage";
 import { GitPage } from "./web/GitPage";
@@ -70,6 +72,7 @@ createRoot(root).render(
         <Route element={<CoreShell />}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/my-skills" element={<MySkills />} />
+          <Route path="/mcp" element={<McpLibrary />} />
           <Route path="/global-workspace" element={<WorkspaceView config={CODING_WORKSPACE_CONFIG} />} />
           <Route path="/global-workspace/:agentKey" element={<WorkspaceView config={CODING_WORKSPACE_CONFIG} />} />
           <Route path="/lobster-workspace" element={<WorkspaceView config={LOBSTER_WORKSPACE_CONFIG} />} />
@@ -81,6 +84,7 @@ createRoot(root).render(
         <Route element={<WebShell />}>
           <Route path="/web" element={<DashboardPage />} />
           <Route path="/web/skills" element={<SkillsPage />} />
+          <Route path="/web/mcp" element={<McpPage />} />
           <Route path="/web/presets" element={<PresetsPage />} />
           <Route path="/web/tools" element={<ToolsPage />} />
           <Route path="/web/git" element={<GitPage />} />

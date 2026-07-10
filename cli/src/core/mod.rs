@@ -9,6 +9,8 @@ pub mod git_fetcher;
 pub mod installer;
 pub mod log_sanitize;
 pub mod migrations;
+pub mod mcp_actions;
+pub mod mcp_store;
 pub mod project_scanner;
 pub mod repo_lock;
 pub mod scanner;

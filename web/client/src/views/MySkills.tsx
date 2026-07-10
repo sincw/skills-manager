@@ -36,6 +36,7 @@ import { BatchTagDialog } from "../components/BatchTagDialog";
 import { GitSetupDialog } from "../components/GitSetupDialog";
 import { GitRecoveryDialog } from "../components/GitRecoveryDialog";
 import { SyncDots } from "../components/SyncDots";
+import { PresetMcpTab } from "../components/PresetMcpTab";
 import * as api from "../lib/tauri";
 import { getTagActiveColor, getTagColor, UNTAGGED_FILTER } from "../lib/skillTags";
 import type {
@@ -177,6 +178,8 @@ export function MySkills() {
   const tagInputRef = useRef<HTMLInputElement>(null);
 
   const [presetSkillOrder, setPresetSkillOrder] = useState<string[]>([]);
+  const [detailTab, setDetailTab] = useState<"skills" | "mcp">("skills");
+  const [presetMcpCount, setPresetMcpCount] = useState(0);
 
   const viewedPresetName = viewedPreset?.name || t("mySkills.currentPresetFallback");
   const viewedPresetId = viewedPreset?.id ?? null;
@@ -192,10 +195,21 @@ export function MySkills() {
   useEffect(() => {
     if (!viewedPreset) {
       setPresetSkillOrder([]);
+      setPresetMcpCount(0);
+      setDetailTab("skills");
       return;
     }
     api.getPresetSkillOrder(viewedPreset.id).then(setPresetSkillOrder).catch(() => {});
+    api
+      .getPresetMcpServers(viewedPreset.id)
+      .then((list) => setPresetMcpCount(list.length))
+      .catch(() => setPresetMcpCount(0));
   }, [viewedPreset, skills]);
+
+  const presetSkillCount = useMemo(() => {
+    if (!viewedPreset) return skills.length;
+    return skills.filter((s) => s.preset_ids.includes(viewedPreset.id)).length;
+  }, [skills, viewedPreset]);
 
   const refreshAllTags = async () => {
     try {
@@ -1213,6 +1227,47 @@ export function MySkills() {
 
       </div>
 
+      {viewedPreset ? (
+        <div className="mb-3 flex items-center gap-1 border-b border-border-subtle">
+          <button
+            type="button"
+            onClick={() => setDetailTab("skills")}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors outline-none",
+              detailTab === "skills"
+                ? "border-accent text-primary"
+                : "border-transparent text-muted hover:text-secondary",
+            )}
+          >
+            {t("mySkills.tabs.skills", { count: presetSkillCount })}
+          </button>
+          <button
+            type="button"
+            onClick={() => setDetailTab("mcp")}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors outline-none",
+              detailTab === "mcp"
+                ? "border-accent text-primary"
+                : "border-transparent text-muted hover:text-secondary",
+            )}
+          >
+            {t("mySkills.tabs.mcp", { count: presetMcpCount })}
+          </button>
+        </div>
+      ) : null}
+
+      {viewedPreset && detailTab === "mcp" ? (
+        <PresetMcpTab
+          presetId={viewedPreset.id}
+          onMembershipChange={() => {
+            api
+              .getPresetMcpServers(viewedPreset.id)
+              .then((list) => setPresetMcpCount(list.length))
+              .catch(() => setPresetMcpCount(0));
+          }}
+        />
+      ) : (
+      <>
       <div className="app-toolbar">
         <div className="flex flex-1 gap-3">
           <div className="relative w-full max-w-[280px]">
@@ -1956,6 +2011,8 @@ export function MySkills() {
         onClose={() => setRecoveryOpen(false)}
         onReclone={handleRecoveryReclone}
       />
+      </>
+      )}
     </div>
   );
 }

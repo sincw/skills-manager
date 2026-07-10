@@ -180,6 +180,9 @@ pub(crate) fn init_repo_unlocked(skills_dir: &Path) -> Result<()> {
     run_git_checked(skills_dir, &["checkout", "-b", "main"])?;
 
     ensure_gitignore(skills_dir)?;
+    // Snapshot MCP library into the skills git root (sibling `mcp/` is outside
+    // the repo; plaintext-secrets risk is accepted this phase — see PRD).
+    sync_mcp_snapshot_into_skills(skills_dir)?;
 
     // Initial commit
     run_git_checked(skills_dir, &["add", "-A"])?;
@@ -246,6 +249,7 @@ pub fn commit_all(skills_dir: &Path, message: &str) -> Result<()> {
 pub(crate) fn commit_all_unlocked(skills_dir: &Path, message: &str) -> Result<()> {
     ensure_repo(skills_dir)?;
     ensure_gitignore(skills_dir)?;
+    sync_mcp_snapshot_into_skills(skills_dir)?;
 
     run_git_checked(skills_dir, &["add", "-A"])?;
 
@@ -666,6 +670,49 @@ fn ensure_no_interrupted_git_operation(skills_dir: &Path) -> Result<()> {
             anyhow::bail!(
                 "Git operation is already in progress ({marker}); resolve it before syncing"
             );
+        }
+    }
+    Ok(())
+}
+
+/// Copy `central_repo::mcp_dir()` into `skills_dir/.mcp/` so git backup of the
+/// skills repository also captures the MCP server library. The central library
+/// lives as a sibling of `skills/` (`<base>/mcp`), which is outside the skills
+/// git root; this snapshot is the integration seam for this phase.
+fn sync_mcp_snapshot_into_skills(skills_dir: &Path) -> Result<()> {
+    let mcp_src = super::central_repo::mcp_dir();
+    let mcp_dest = skills_dir.join(".mcp");
+
+    if mcp_dest.exists() {
+        std::fs::remove_dir_all(&mcp_dest).with_context(|| {
+            format!("Failed to clear MCP snapshot at {}", mcp_dest.display())
+        })?;
+    }
+
+    if !mcp_src.is_dir() {
+        return Ok(());
+    }
+
+    copy_dir_recursive(&mcp_src, &mcp_dest).with_context(|| {
+        format!(
+            "Failed to snapshot MCP library from {} into {}",
+            mcp_src.display(),
+            mcp_dest.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let target = dest.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else if ty.is_file() {
+            std::fs::copy(entry.path(), &target)?;
         }
     }
     Ok(())

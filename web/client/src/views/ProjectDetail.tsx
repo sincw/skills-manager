@@ -30,6 +30,7 @@ import { DetailSheet } from "../components/DetailSheet";
 import { AgentToggleSection, type AgentToggleItem } from "../components/AgentToggleSection";
 import { ProjectAgentDots } from "../components/ProjectAgentDots";
 import { PresetBar } from "../components/PresetBar";
+import { GlobalWorkspaceMcpTab } from "../components/GlobalWorkspaceMcpTab";
 import { SkillMarkdown } from "../components/SkillMarkdown";
 import { DocumentDiffViewer } from "../components/DocumentDiffViewer";
 import { getTagActiveColor, getTagColor, UNTAGGED_FILTER } from "../lib/skillTags";
@@ -160,6 +161,8 @@ export function ProjectDetail() {
     projects,
     presets,
     managedSkills,
+    tools,
+    activePreset,
     loading: appLoading,
     refreshManagedSkills,
     refreshPresets,
@@ -173,6 +176,9 @@ export function ProjectDetail() {
   const [filterMode, setFilterMode] = useState<"all" | "enabled" | "disabled">("all");
   const [search, setSearch] = useState("");
   const [tagFilters, setTagFilters] = useState<Set<string>>(new Set());
+  const [detailTab, setDetailTab] = useState<"skills" | "mcp">("skills");
+  const [mcpCount, setMcpCount] = useState(0);
+  const [mcpRefreshToken, setMcpRefreshToken] = useState(0);
   const [detailSkill, setDetailSkill] = useState<ProjectSkillGroup | null>(null);
   const [docContent, setDocContent] = useState<string | null>(null);
   const [docLoading, setDocLoading] = useState(false);
@@ -819,8 +825,32 @@ export function ProjectDetail() {
   );
 
   const handlePresetActionComplete = useCallback(async () => {
-    await Promise.all([loadSkills(), refreshProjects()]);
-  }, [loadSkills, refreshProjects]);
+    await Promise.all([loadSkills(), refreshProjects(), refreshPresets()]);
+    setMcpRefreshToken((n) => n + 1);
+  }, [loadSkills, refreshPresets, refreshProjects]);
+
+  // Project page is not per-tool; badge still means "MCP servers on the active
+  // preset that can land in a profile" — only if at least one installed tool
+  // supports profile MCP (currently codex). Avoid implying every agent gets MCP.
+  useEffect(() => {
+    let cancelled = false;
+    const anyProfileTool = tools.some((item) => item.supports_mcp_profile);
+    if (!activePreset || !anyProfileTool) {
+      setMcpCount(0);
+      return;
+    }
+    void api
+      .getPresetMcpServers(activePreset.id)
+      .then((list) => {
+        if (!cancelled) setMcpCount(list.length);
+      })
+      .catch(() => {
+        if (!cancelled) setMcpCount(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePreset?.id, mcpRefreshToken, id, tools]);
 
   if (!project) return null;
 
@@ -840,6 +870,7 @@ export function ProjectDetail() {
             </p>
           </div>
 
+          {detailTab === "skills" ? (
           <div className="flex min-w-0 flex-[2_1_560px] flex-wrap items-center justify-end gap-2">
             <div className="relative w-full min-w-[220px] max-w-[300px]">
               <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
@@ -932,9 +963,10 @@ export function ProjectDetail() {
               )}
             </div>
           </div>
+          ) : null}
         </div>
 
-        {allTags.length > 0 && (
+        {detailTab === "skills" && allTags.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-[12px] text-muted">{t("mySkills.tags.filter")}</span>
             <button
@@ -1008,10 +1040,51 @@ export function ProjectDetail() {
             onAddSkill={handleAddPresetSkillToProject}
             onRemoveSkill={handleRemovePresetSkillFromProject}
             onComplete={handlePresetActionComplete}
+            projectWorkspace
           />
         )}
+
+        <div className="flex items-center gap-1 border-b border-border-subtle">
+          <button
+            type="button"
+            onClick={() => setDetailTab("skills")}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors outline-none",
+              detailTab === "skills"
+                ? "border-accent text-primary"
+                : "border-transparent text-muted hover:text-secondary",
+            )}
+          >
+            {t("project.tabs.skills", { count: groupedSkills.length })}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setDetailTab("mcp");
+              if (isMultiSelect) exitMultiSelect();
+            }}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors outline-none",
+              detailTab === "mcp"
+                ? "border-accent text-primary"
+                : "border-transparent text-muted hover:text-secondary",
+            )}
+          >
+            {t("project.tabs.mcp", { count: mcpCount })}
+          </button>
+        </div>
       </div>
 
+      {detailTab === "mcp" ? (
+        <GlobalWorkspaceMcpTab
+          tools={tools}
+          activePreset={activePreset}
+          refreshToken={mcpRefreshToken}
+          onMcpCountChange={setMcpCount}
+          readOnly
+        />
+      ) : (
+      <>
       {isMultiSelect && (
         <MultiSelectToolbar
           selectedCount={selectedIds.size}
@@ -1395,6 +1468,8 @@ export function ProjectDetail() {
             );
           })}
         </div>
+      )}
+      </>
       )}
 
       {/* Skill Document Detail Panel */}

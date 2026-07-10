@@ -19,6 +19,15 @@ pub struct ToolInfo {
     pub project_relative_skills_dir: Option<String>,
     pub has_project_path_override: bool,
     pub category: ToolCategory,
+    pub supports_mcp_profile: bool,
+    pub supported_mcp_formats: Vec<String>,
+    pub mcp_output_dir: Option<String>,
+    pub mcp_output_format: String,
+    pub has_mcp_path_override: bool,
+    /// Fixed MCP filename when the tool does not use `{preset}.config.*` overlays
+    /// (e.g. Pi → `mcp.json`). `None` means profile-style naming.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_output_filename: Option<String>,
 }
 
 pub fn get_disabled_tools(store: &SkillStore) -> Vec<String> {
@@ -119,6 +128,153 @@ pub fn set_disabled_tools(store: &SkillStore, disabled: &[String]) -> Result<(),
         .map_err(AppError::db)
 }
 
+/// Enable or disable a single tool (agent) in the global disabled_tools list.
+pub fn set_tool_enabled(
+    store: &SkillStore,
+    key: &str,
+    enabled: bool,
+) -> Result<ToolInfo, AppError> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(AppError::invalid_input("tool key is required"));
+    }
+    if tool_adapters::find_adapter_with_store(store, key).is_none() {
+        return Err(AppError::invalid_input(format!("unknown tool key: {key}")));
+    }
+
+    let mut disabled = get_disabled_tools(store);
+    let was_disabled = disabled.iter().any(|k| k == key);
+    if enabled {
+        disabled.retain(|k| k != key);
+    } else if !was_disabled {
+        disabled.push(key.to_string());
+        disabled.sort();
+        disabled.dedup();
+    }
+    set_disabled_tools(store, &disabled)?;
+
+    list_tool_info(store)
+        .into_iter()
+        .find(|t| t.key == key)
+        .ok_or_else(|| AppError::internal(format!("tool vanished after enable toggle: {key}")))
+}
+
+/// Bulk enable/disable every known tool.
+pub fn set_all_tools_enabled(store: &SkillStore, enabled: bool) -> Result<Vec<ToolInfo>, AppError> {
+    if enabled {
+        set_disabled_tools(store, &[])?;
+    } else {
+        let all: Vec<String> = tool_adapters::all_tool_adapters(store)
+            .into_iter()
+            .map(|a| a.key)
+            .collect();
+        set_disabled_tools(store, &all)?;
+    }
+    Ok(list_tool_info(store))
+}
+
+pub fn get_custom_tool_mcp_profile_support(store: &SkillStore) -> HashMap<String, bool> {
+    tool_adapters::custom_tool_mcp_profile_support(store)
+}
+
+pub fn set_custom_tool_mcp_profile_support(
+    store: &SkillStore,
+    map: &HashMap<String, bool>,
+) -> Result<(), AppError> {
+    let json = serde_json::to_string(map)
+        .map_err(|e| AppError::internal(format!("Failed to serialize: {e}")))?;
+    store
+        .set_setting("custom_tool_mcp_profile_support", &json)
+        .map_err(AppError::db)
+}
+
+pub fn get_custom_tool_mcp_filenames(store: &SkillStore) -> HashMap<String, String> {
+    tool_adapters::custom_tool_mcp_filenames(store)
+}
+
+pub fn set_custom_tool_mcp_filenames(
+    store: &SkillStore,
+    map: &HashMap<String, String>,
+) -> Result<(), AppError> {
+    let json = serde_json::to_string(map)
+        .map_err(|e| AppError::internal(format!("Failed to serialize: {e}")))?;
+    store
+        .set_setting("custom_tool_mcp_filenames", &json)
+        .map_err(AppError::db)
+}
+
+pub fn set_tool_mcp_filename(
+    store: &SkillStore,
+    key: &str,
+    filename: Option<&str>,
+) -> Result<ToolInfo, AppError> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(AppError::invalid_input("tool key is required"));
+    }
+    if tool_adapters::find_adapter_with_store(store, key).is_none() {
+        return Err(AppError::invalid_input(format!("unknown tool key: {key}")));
+    }
+
+    let mut map = get_custom_tool_mcp_filenames(store);
+    match filename {
+        Some(f) if f.trim().is_empty() => {
+            // Empty → use preset-based naming (clear override).
+            map.insert(key.to_string(), String::new());
+        }
+        Some(f) => {
+            map.insert(key.to_string(), f.trim().to_string());
+        }
+        None => {
+            // Remove override → fall back to adapter default.
+            map.remove(key);
+        }
+    }
+    set_custom_tool_mcp_filenames(store, &map)?;
+
+    list_tool_info(store)
+        .into_iter()
+        .find(|t| t.key == key)
+        .ok_or_else(|| AppError::internal(format!("tool vanished after mcp filename update: {key}")))
+}
+
+/// Toggle whether a tool participates in profile-based MCP sync.
+pub fn set_tool_mcp_profile_support(
+    store: &SkillStore,
+    key: &str,
+    enabled: bool,
+) -> Result<ToolInfo, AppError> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(AppError::invalid_input("tool key is required"));
+    }
+    if tool_adapters::find_adapter_with_store(store, key).is_none() {
+        return Err(AppError::invalid_input(format!("unknown tool key: {key}")));
+    }
+
+    let mut map = get_custom_tool_mcp_profile_support(store);
+    map.insert(key.to_string(), enabled);
+    set_custom_tool_mcp_profile_support(store, &map)?;
+
+    // When enabling for the first time, seed a default format if none is set.
+    if enabled {
+        let formats = get_custom_tool_mcp_formats(store);
+        if !formats.contains_key(key) {
+            let adapter = tool_adapters::find_adapter_with_store(store, key).unwrap();
+            if adapter.supported_mcp_formats.is_empty() {
+                let mut formats = formats;
+                formats.insert(key.to_string(), "toml".to_string());
+                set_custom_tool_mcp_formats(store, &formats)?;
+            }
+        }
+    }
+
+    list_tool_info(store)
+        .into_iter()
+        .find(|t| t.key == key)
+        .ok_or_else(|| AppError::internal(format!("tool vanished after mcp support toggle: {key}")))
+}
+
 pub fn get_custom_tool_paths(store: &SkillStore) -> HashMap<String, String> {
     tool_adapters::custom_tool_paths(store)
 }
@@ -132,6 +288,88 @@ pub fn set_custom_tool_paths(
     store
         .set_setting("custom_tool_paths", &json)
         .map_err(AppError::db)
+}
+
+pub fn get_custom_tool_mcp_paths(store: &SkillStore) -> HashMap<String, String> {
+    tool_adapters::custom_tool_mcp_paths(store)
+}
+
+pub fn set_custom_tool_mcp_paths(
+    store: &SkillStore,
+    paths: &HashMap<String, String>,
+) -> Result<(), AppError> {
+    let json = serde_json::to_string(paths)
+        .map_err(|e| AppError::internal(format!("Failed to serialize: {e}")))?;
+    store
+        .set_setting("custom_tool_mcp_paths", &json)
+        .map_err(AppError::db)
+}
+
+pub fn get_custom_tool_mcp_formats(store: &SkillStore) -> HashMap<String, String> {
+    tool_adapters::custom_tool_mcp_formats(store)
+}
+
+pub fn set_custom_tool_mcp_formats(
+    store: &SkillStore,
+    formats: &HashMap<String, String>,
+) -> Result<(), AppError> {
+    let json = serde_json::to_string(formats)
+        .map_err(|e| AppError::internal(format!("Failed to serialize: {e}")))?;
+    store
+        .set_setting("custom_tool_mcp_formats", &json)
+        .map_err(AppError::db)
+}
+
+/// Update a tool's MCP output dir and/or format overrides.
+///
+/// `format` must be `toml` or `json`, and must also be present in the tool's
+/// `supported_mcp_formats` (when that list is non-empty). Returns the updated
+/// [`ToolInfo`] for the target key.
+pub fn set_tool_mcp_settings(
+    store: &SkillStore,
+    key: &str,
+    output_dir: Option<&str>,
+    format: Option<&str>,
+) -> Result<ToolInfo, AppError> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(AppError::invalid_input("tool key is required"));
+    }
+    if output_dir.is_none() && format.is_none() {
+        return Err(AppError::invalid_input(
+            "at least one of --output-dir or --format is required",
+        ));
+    }
+
+    let adapter = tool_adapters::find_adapter_with_store(store, key).ok_or_else(|| {
+        AppError::invalid_input(format!("unknown tool key: {key}"))
+    })?;
+
+    if let Some(fmt_raw) = format {
+        let fmt = fmt_raw.trim().to_ascii_lowercase();
+        if fmt != "toml" && fmt != "json" {
+            return Err(AppError::invalid_input(
+                "mcp_output_format must be \"toml\" or \"json\"",
+            ));
+        }
+        // Allow any valid format; the sync phase will skip tools whose
+        // adapter doesn't support the configured format at sync time.
+        let mut formats = get_custom_tool_mcp_formats(store);
+        formats.insert(key.to_string(), fmt);
+        set_custom_tool_mcp_formats(store, &formats)?;
+    }
+
+    if let Some(dir_raw) = output_dir {
+        let normalized = normalize_skills_dir_input(dir_raw)?;
+        let mut paths = get_custom_tool_mcp_paths(store);
+        paths.insert(key.to_string(), normalized);
+        set_custom_tool_mcp_paths(store, &paths)?;
+    }
+
+    list_tool_info(store)
+        .into_iter()
+        .find(|info| info.key == key)
+        .ok_or_else(|| AppError::internal(format!("tool disappeared after update: {key}")))
 }
 
 pub fn get_custom_tool_project_paths(store: &SkillStore) -> HashMap<String, String> {
@@ -217,6 +455,7 @@ pub fn normalize_project_relative_skills_dir_input(path: &str) -> Result<Option<
 pub fn list_tool_info(store: &SkillStore) -> Vec<ToolInfo> {
     let disabled = disabled_tools_set(store);
     let project_overrides = get_custom_tool_project_paths(store);
+    let mcp_path_overrides = get_custom_tool_mcp_paths(store);
     let infos: Vec<ToolInfo> = tool_adapters::all_tool_adapters(store)
         .into_iter()
         .map(|adapter| ToolInfo {
@@ -240,6 +479,14 @@ pub fn list_tool_info(store: &SkillStore) -> Vec<ToolInfo> {
             has_project_path_override: !adapter.is_custom
                 && project_overrides.contains_key(&adapter.key),
             category: adapter.category,
+            supports_mcp_profile: adapter.supports_mcp_profile,
+            supported_mcp_formats: adapter.supported_mcp_formats.clone(),
+            mcp_output_dir: adapter
+                .mcp_output_dir()
+                .map(|p| p.to_string_lossy().to_string()),
+            mcp_output_format: adapter.resolved_mcp_output_format().to_string(),
+            has_mcp_path_override: mcp_path_overrides.contains_key(&adapter.key),
+            mcp_output_filename: adapter.mcp_output_filename.clone(),
         })
         .collect();
 
@@ -400,5 +647,53 @@ mod tests {
         let all = v(&["claude_code", "codex", "some_new_tool"]);
         let order = merge_order(&saved, &all);
         assert_eq!(order.last().unwrap(), "some_new_tool");
+    }
+
+    #[test]
+    fn set_tool_mcp_settings_updates_path_and_format() {
+        use crate::core::central_repo;
+        use crate::core::skill_store::SkillStore;
+        use tempfile::TempDir;
+
+        let _guard = central_repo::test_base_dir_lock();
+        let dir = TempDir::new().unwrap();
+        central_repo::set_test_base_dir_override(Some(dir.path().to_path_buf()));
+        let _ = central_repo::ensure_central_repo();
+        let store = SkillStore::new(&dir.path().join("skills-manager.db")).unwrap();
+
+        let out = dir.path().join("mcp-out");
+        std::fs::create_dir_all(&out).unwrap();
+        let info = set_tool_mcp_settings(
+            &store,
+            "codex",
+            Some(out.to_str().unwrap()),
+            Some("toml"),
+        )
+        .unwrap();
+        assert_eq!(info.mcp_output_dir.as_deref(), Some(out.to_str().unwrap()));
+        assert_eq!(info.mcp_output_format, "toml");
+        assert!(info.has_mcp_path_override);
+
+        central_repo::set_test_base_dir_override(None);
+    }
+
+    #[test]
+    fn set_tool_mcp_settings_allows_any_valid_format() {
+        use crate::core::central_repo;
+        use crate::core::skill_store::SkillStore;
+        use tempfile::TempDir;
+
+        let _guard = central_repo::test_base_dir_lock();
+        let dir = TempDir::new().unwrap();
+        central_repo::set_test_base_dir_override(Some(dir.path().to_path_buf()));
+        let _ = central_repo::ensure_central_repo();
+        let store = SkillStore::new(&dir.path().join("skills-manager.db")).unwrap();
+
+        // JSON is accepted even for codex whose adapter defaults to ["toml"];
+        // sync will skip the tool at output time if the format is not consumed.
+        let info = set_tool_mcp_settings(&store, "codex", None, Some("json")).unwrap();
+        assert_eq!(info.mcp_output_format, "json");
+
+        central_repo::set_test_base_dir_override(None);
     }
 }

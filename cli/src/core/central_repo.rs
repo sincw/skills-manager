@@ -149,6 +149,11 @@ pub fn skills_dir() -> PathBuf {
     base_dir().join("skills")
 }
 
+/// Central MCP server library directory: one `.toml` file per server.
+pub fn mcp_dir() -> PathBuf {
+    base_dir().join("mcp")
+}
+
 /// Derive a stable per-skills-root state directory under the user's default base.
 ///
 /// CLI's `--skills-root` lets agents operate on an external skills checkout
@@ -364,7 +369,13 @@ pub fn ensure_central_repo() -> Result<()> {
     let current_base = base_dir();
     migrate_repo_if_needed(&mut config, &current_base)?;
 
-    let dirs = [skills_dir(), scenarios_dir(), cache_dir(), logs_dir()];
+    let dirs = [
+        skills_dir(),
+        mcp_dir(),
+        scenarios_dir(),
+        cache_dir(),
+        logs_dir(),
+    ];
     for d in &dirs {
         fs::create_dir_all(d)?;
     }

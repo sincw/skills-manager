@@ -82,3 +82,43 @@ export function validateGitUrl(value: unknown, name = "url"): string {
 export function refParam(value: unknown): string {
   return nonEmptyString(value, "reference");
 }
+
+/** Max MCP TOML content size accepted by install/edit routes (matches CLI). */
+export const MCP_CONTENT_MAX_BYTES = 64 * 1024;
+
+/** Allowed MCP output format values for PUT /api/tools/:key/mcp. */
+export const MCP_OUTPUT_FORMATS = ["toml", "json"] as const;
+export type McpOutputFormat = (typeof MCP_OUTPUT_FORMATS)[number];
+
+/**
+ * Validate raw MCP TOML content for install/edit.
+ * Enforces non-empty string and the 64KB size limit (UTF-8 byte length).
+ */
+export function mcpContent(value: unknown, name = "content"): string {
+  if (typeof value !== "string") {
+    throw new Error(`${name} is required`);
+  }
+  if (value.trim() === "") {
+    throw new Error(`${name} is required`);
+  }
+  if (CONTROL_CHARS.test(value.replace(/\n|\r|\t/g, ""))) {
+    throw new Error(`${name} contains control characters`);
+  }
+  const bytes = Buffer.byteLength(value, "utf8");
+  if (bytes > MCP_CONTENT_MAX_BYTES) {
+    throw new Error(`${name} exceeds ${MCP_CONTENT_MAX_BYTES} bytes`);
+  }
+  return value;
+}
+
+/**
+ * Validate an MCP output format enum (`toml` | `json`).
+ * Returns the normalized lowercase value.
+ */
+export function mcpOutputFormat(value: unknown, name = "mcp_output_format"): McpOutputFormat {
+  const raw = nonEmptyString(value, name).toLowerCase();
+  if (raw !== "toml" && raw !== "json") {
+    throw new Error(`${name} must be "toml" or "json"`);
+  }
+  return raw;
+}

@@ -6,6 +6,7 @@ import {
   GitBranch,
   LayoutDashboard,
   Layers,
+  Server,
   Settings,
   WandSparkles,
 } from "lucide-react";
@@ -35,6 +36,7 @@ function ThemedToaster() {
 const NAV_ITEMS = [
   { labelKey: "web.nav.dashboard", path: "/web", icon: LayoutDashboard },
   { labelKey: "web.nav.skills", path: "/web/skills", icon: Layers },
+  { labelKey: "web.nav.mcp", path: "/web/mcp", icon: Server },
   { labelKey: "web.nav.presets", path: "/web/presets", icon: WandSparkles },
   { labelKey: "web.nav.tools", path: "/web/tools", icon: Bot },
   { labelKey: "web.nav.git", path: "/web/git", icon: GitBranch },

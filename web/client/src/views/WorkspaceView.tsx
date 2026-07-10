@@ -21,6 +21,7 @@ import { cn } from "../utils";
 import { useApp } from "../context/AppContext";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PresetBar } from "../components/PresetBar";
+import { GlobalWorkspaceMcpTab } from "../components/GlobalWorkspaceMcpTab";
 import { AgentIcon } from "../components/AgentIcon";
 import { DetailSheet } from "../components/DetailSheet";
 import { SkillMarkdown } from "../components/SkillMarkdown";
@@ -217,9 +218,12 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
   const { agentKey } = useParams<{ agentKey?: string }>();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { tools, managedSkills, presets, refreshManagedSkills, refreshTools } = useApp();
+  const { tools, managedSkills, presets, activePreset, refreshManagedSkills, refreshTools, refreshPresets } = useApp();
 
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [detailTab, setDetailTab] = useState<"skills" | "mcp">("skills");
+  const [mcpCount, setMcpCount] = useState(0);
+  const [mcpRefreshToken, setMcpRefreshToken] = useState(0);
   const [search, setSearch] = useState("");
   const [tagFilters, setTagFilters] = useState<Set<string>>(new Set());
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -322,7 +326,33 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
     setPullConfirmSkill(null);
     setDeleteLocalConfirmSkill(null);
     setTagFilters(new Set());
+    setDetailTab("skills");
+    // MCP membership is preset-global, not per-tool — do not zero mcpCount here.
+    // Zeroing on tool switch left a stale 0 until the MCP tab remounted and
+    // re-reported the count (activePreset id often unchanged across tools).
   }, [currentTool?.key]);
+
+  // Badge = MCP servers that this tool can actually receive as a profile.
+  // Membership is preset-global, but only supports_mcp_profile tools (codex)
+  // write files — non-supporting tools must show 0, not the shared member count.
+  useEffect(() => {
+    let cancelled = false;
+    if (!activePreset || !currentTool?.supports_mcp_profile) {
+      setMcpCount(0);
+      return;
+    }
+    void api
+      .getPresetMcpServers(activePreset.id)
+      .then((list) => {
+        if (!cancelled) setMcpCount(list.length);
+      })
+      .catch(() => {
+        if (!cancelled) setMcpCount(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePreset?.id, mcpRefreshToken, currentTool?.key, currentTool?.supports_mcp_profile]);
 
   const agentSkills = useMemo(
     () =>
@@ -543,9 +573,15 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
   }, []);
 
   const handlePresetComplete = useCallback(async () => {
-    await Promise.all([refreshManagedSkills(), refreshTools(), loadLocalSkills()]);
+    await Promise.all([
+      refreshManagedSkills(),
+      refreshTools(),
+      loadLocalSkills(),
+      refreshPresets(),
+    ]);
+    setMcpRefreshToken((n) => n + 1);
     notifyGlobalWorkspaceSkillCountsChanged();
-  }, [loadLocalSkills, refreshManagedSkills, refreshTools]);
+  }, [loadLocalSkills, refreshManagedSkills, refreshPresets, refreshTools]);
 
   const renderLocalSkillActions = (skill: ProjectSkill, variant: "grid" | "list") => {
     const uploadKey = `upload:${skill.relative_path}`;
@@ -739,61 +775,63 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
             </p>
           </div>
 
-          <div className="flex min-w-0 flex-[2_1_520px] flex-wrap items-center justify-end gap-2">
-            <div className="relative w-full min-w-[220px] max-w-[320px]">
-              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t("globalWorkspace.localSkills.searchPlaceholder")}
-                className="app-input h-9 w-full rounded-md pl-8 font-medium"
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-            </div>
+          {detailTab === "skills" ? (
+            <div className="flex min-w-0 flex-[2_1_520px] flex-wrap items-center justify-end gap-2">
+              <div className="relative w-full min-w-[220px] max-w-[320px]">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={t("globalWorkspace.localSkills.searchPlaceholder")}
+                  className="app-input h-9 w-full rounded-md pl-8 font-medium"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+              </div>
 
-            <div className="app-segmented shrink-0">
+              <div className="app-segmented shrink-0">
+                <button
+                  onClick={() => void loadLocalSkills()}
+                  disabled={localSkillsLoading}
+                  className="rounded-md p-2 text-muted transition-colors outline-none hover:text-tertiary disabled:opacity-50"
+                  title={t("settings.refresh")}
+                >
+                  <RefreshCw className={cn("h-4 w-4", localSkillsLoading && "animate-spin")} />
+                </button>
+                <button
+                  onClick={() => setViewMode("grid")}
+                  className={cn(
+                    "rounded-md p-2 transition-colors outline-none",
+                    viewMode === "grid" ? "bg-surface-active text-secondary" : "text-muted hover:text-tertiary"
+                  )}
+                >
+                  <LayoutGrid className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => setViewMode("list")}
+                  className={cn(
+                    "rounded-md p-2 transition-colors outline-none",
+                    viewMode === "list" ? "bg-surface-active text-secondary" : "text-muted hover:text-tertiary"
+                  )}
+                >
+                  <List className="h-4 w-4" />
+                </button>
+              </div>
+
               <button
-                onClick={() => void loadLocalSkills()}
-                disabled={localSkillsLoading}
-                className="rounded-md p-2 text-muted transition-colors outline-none hover:text-tertiary disabled:opacity-50"
-                title={t("settings.refresh")}
+                onClick={() => setAddDialogOpen(true)}
+                className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-medium text-white transition-colors hover:bg-accent-hover"
               >
-                <RefreshCw className={cn("h-4 w-4", localSkillsLoading && "animate-spin")} />
-              </button>
-              <button
-                onClick={() => setViewMode("grid")}
-                className={cn(
-                  "rounded-md p-2 transition-colors outline-none",
-                  viewMode === "grid" ? "bg-surface-active text-secondary" : "text-muted hover:text-tertiary"
-                )}
-              >
-                <LayoutGrid className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => setViewMode("list")}
-                className={cn(
-                  "rounded-md p-2 transition-colors outline-none",
-                  viewMode === "list" ? "bg-surface-active text-secondary" : "text-muted hover:text-tertiary"
-                )}
-              >
-                <List className="h-4 w-4" />
+                <Plus className="h-3.5 w-3.5" />
+                {t("globalWorkspace.addSkill")}
               </button>
             </div>
-
-            <button
-              onClick={() => setAddDialogOpen(true)}
-              className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-medium text-white transition-colors hover:bg-accent-hover"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {t("globalWorkspace.addSkill")}
-            </button>
-          </div>
+          ) : null}
         </div>
 
-        {allLocalTags.length > 0 && (
+        {detailTab === "skills" && allLocalTags.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-[12px] text-muted">{t("mySkills.tags.filter")}</span>
             <button
@@ -869,9 +907,43 @@ export function WorkspaceView({ config }: { config: WorkspaceConfig }) {
             onComplete={handlePresetComplete}
           />
         )}
+
+        <div className="flex items-center gap-1 border-b border-border-subtle">
+          <button
+            type="button"
+            onClick={() => setDetailTab("skills")}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors outline-none",
+              detailTab === "skills"
+                ? "border-accent text-primary"
+                : "border-transparent text-muted hover:text-secondary",
+            )}
+          >
+            {t("globalWorkspace.tabs.skills", { count: localSkills.length })}
+          </button>
+          <button
+            type="button"
+            onClick={() => setDetailTab("mcp")}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors outline-none",
+              detailTab === "mcp"
+                ? "border-accent text-primary"
+                : "border-transparent text-muted hover:text-secondary",
+            )}
+          >
+            {t("globalWorkspace.tabs.mcp", { count: mcpCount })}
+          </button>
+        </div>
       </div>
 
-      {localSkillsLoading ? (
+      {detailTab === "mcp" && currentTool ? (
+        <GlobalWorkspaceMcpTab
+          tool={currentTool}
+          activePreset={activePreset}
+          refreshToken={mcpRefreshToken}
+          onMcpCountChange={setMcpCount}
+        />
+      ) : localSkillsLoading ? (
         <div className="flex items-center gap-2 py-4 text-[13px] text-muted">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           {t("common.loading")}

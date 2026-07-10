@@ -6,6 +6,7 @@ import { cn } from "../utils";
 import { computePresetStatus } from "../lib/presetStatus";
 import { getPresetIconOption } from "../lib/presetIcons";
 import type { ManagedSkill, Preset } from "../lib/tauri";
+import * as api from "../lib/tauri";
 import { getErrorMessage } from "../lib/error";
 
 export interface PresetBarProps {
@@ -16,6 +17,11 @@ export interface PresetBarProps {
   onAddSkill: (skill: ManagedSkill, agentKey: string) => Promise<void>;
   onRemoveSkill: (skill: ManagedSkill, agentKey: string) => Promise<void>;
   onComplete: () => Promise<void>;
+  /**
+   * When true (project workspace), activation surfaces a non-blocking notice that
+   * MCP profile files are written to the tool's global config dir.
+   */
+  projectWorkspace?: boolean;
 }
 
 export function PresetBar({
@@ -26,6 +32,7 @@ export function PresetBar({
   onAddSkill,
   onRemoveSkill,
   onComplete,
+  projectWorkspace = false,
 }: PresetBarProps) {
   const { t } = useTranslation();
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
@@ -38,57 +45,80 @@ export function PresetBar({
     return map;
   }, [presets, managedSkills, agentKeys, existsInWorkspace]);
 
+  // Global workspace: unified apply (skills targets + MCP profile + active preset).
+  // Project workspace: only mirror skills into the project; optionally write the
+  // global MCP profile for this preset name WITHOUT switching the CLI active
+  // preset (so global workspace is not stolen / restored to Default).
   const handleActivate = useCallback(async (preset: Preset) => {
     setLoadingKey(`${preset.id}-add`);
     try {
+      if (!projectWorkspace) {
+        await api.applyPreset(preset.id);
+      }
+
       const presetSkills = managedSkills.filter((s) => s.preset_ids.includes(preset.id));
-      let added = 0, skipped = 0, failed = 0;
       for (const skill of presetSkills) {
         for (const agentKey of agentKeys) {
-          if (existsInWorkspace(skill, agentKey)) { skipped++; continue; }
-          try { await onAddSkill(skill, agentKey); added++; }
-          catch { failed++; }
+          if (existsInWorkspace(skill, agentKey)) continue;
+          try {
+            await onAddSkill(skill, agentKey);
+          } catch {
+            // best-effort local mirror
+          }
         }
       }
-      if (added > 0) {
-        toast.success(t("presetActions.addedToast", { added, skipped }));
-      } else if (failed === 0) {
-        toast.info(t("presetActions.nothingToAdd"));
+
+      if (projectWorkspace) {
+        // Write/refresh MCP profile files for this preset globally; does not
+        // change active_scenario or global skill_targets.
+        try {
+          await api.syncMcp(preset.id);
+        } catch {
+          // MCP sync is best-effort on project pages
+        }
+        toast.success(t("presetActions.appliedToast", { name: preset.name }));
+        toast.info(t("presetActions.mcpGlobalNotice"));
+      } else {
+        toast.success(t("presetActions.appliedToast", { name: preset.name }));
       }
-      if (failed > 0) toast.error(t("presetActions.partialFailedToast", { count: failed }));
       await onComplete();
     } catch (error) {
       toast.error(getErrorMessage(error, t("common.error")));
     } finally {
       setLoadingKey(null);
     }
-  }, [agentKeys, existsInWorkspace, managedSkills, onAddSkill, onComplete, t]);
+  }, [agentKeys, existsInWorkspace, managedSkills, onAddSkill, onComplete, projectWorkspace, t]);
 
+  // Global workspace: unified deactivate (may switch active → Default and clear MCP).
+  // Project workspace: only remove this preset's skills from the project — never
+  // call global presets deactivate (that would change global active + MCP).
   const handleDeactivate = useCallback(async (preset: Preset) => {
     setLoadingKey(`${preset.id}-remove`);
     try {
+      if (!projectWorkspace) {
+        await api.deactivatePreset(preset.id);
+      }
+
       const presetSkills = managedSkills.filter((s) => s.preset_ids.includes(preset.id));
-      let removed = 0, failed = 0;
       for (const skill of presetSkills) {
         for (const agentKey of agentKeys) {
           if (!existsInWorkspace(skill, agentKey)) continue;
-          try { await onRemoveSkill(skill, agentKey); removed++; }
-          catch { failed++; }
+          try {
+            await onRemoveSkill(skill, agentKey);
+          } catch {
+            // best-effort local mirror
+          }
         }
       }
-      if (removed > 0) {
-        toast.success(t("presetActions.removedToast", { removed }));
-      } else if (failed === 0) {
-        toast.info(t("presetActions.nothingToRemove"));
-      }
-      if (failed > 0) toast.error(t("presetActions.partialFailedToast", { count: failed }));
+
+      toast.success(t("presetActions.deactivatedToast", { name: preset.name }));
       await onComplete();
     } catch (error) {
       toast.error(getErrorMessage(error, t("common.error")));
     } finally {
       setLoadingKey(null);
     }
-  }, [agentKeys, existsInWorkspace, managedSkills, onComplete, onRemoveSkill, t]);
+  }, [agentKeys, existsInWorkspace, managedSkills, onComplete, onRemoveSkill, projectWorkspace, t]);
 
   if (presets.length === 0) return null;
 

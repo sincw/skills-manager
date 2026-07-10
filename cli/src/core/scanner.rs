@@ -376,6 +376,12 @@ mod tests {
             recursive_scan: false,
             project_relative_skills_dir: None,
             category: Default::default(),
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         };
 
         let plan = scan_local_skills_with_adapters(&[], &[adapter]).unwrap();
@@ -405,6 +411,12 @@ mod tests {
             recursive_scan: false,
             project_relative_skills_dir: None,
             category: Default::default(),
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         };
 
         let adapter_with_extra = tool_adapters::ToolAdapter {

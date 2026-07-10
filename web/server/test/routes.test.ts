@@ -25,7 +25,7 @@ has_arg() {
   return 1
 }
 json_escape() {
-  printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'
+  printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read())[1:-1], end="")'
 }
 print_args() {
   printf '{"args":['
@@ -69,8 +69,36 @@ if has_arg tools "$@" && has_arg list "$@"; then
       enabled: true,
       is_custom: false,
       project_relative_skills_dir: ".codex/skills",
+      supports_mcp_profile: true,
+      supported_mcp_formats: ["toml"],
+      mcp_output_dir: path.join(dir, ".codex"),
+      mcp_output_format: "toml",
+      has_mcp_path_override: false,
     },
   ])}'
+  exit 0
+fi
+if has_arg mcp "$@" && has_arg list "$@"; then
+  printf '%s\\n' '[]'
+  exit 0
+fi
+if has_arg mcp "$@" && has_arg show "$@"; then
+  printf '%s\\n' '${JSON.stringify({
+    name: "weather",
+    content: "[mcp_servers.weather]\\ncommand = \\\"uvx\\\"\\n",
+  })}'
+  exit 0
+fi
+if has_arg presets "$@" && has_arg current "$@"; then
+  printf '%s\\n' '${JSON.stringify({
+    id: "active-preset",
+    name: "Active",
+    active: true,
+  })}'
+  exit 0
+fi
+if has_arg presets "$@" && has_arg list-mcp "$@"; then
+  printf '%s\\n' '[]'
   exit 0
 fi
 print_args "$@"
@@ -107,7 +135,7 @@ has_arg() {
   return 1
 }
 json_escape() {
-  printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'
+  printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read())[1:-1], end="")'
 }
 print_args() {
   printf '{"args":['
@@ -191,7 +219,7 @@ has_arg() {
   return 1
 }
 json_escape() {
-  printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'
+  printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read())[1:-1], end="")'
 }
 print_args() {
   printf '{"args":['
@@ -287,7 +315,7 @@ has_arg() {
   return 1
 }
 json_escape() {
-  printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'
+  printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read())[1:-1], end="")'
 }
 print_args() {
   printf '{"args":['
@@ -1190,4 +1218,299 @@ describe("routes", () => {
     expect(failed.status).toBe("failed");
     expect(failed.error).toContain("skill not found: fail-skill");
   });
+
+  it("lists MCP servers through the CLI", async () => {
+    const app = await createServer(makeConfig());
+    const response = await app.inject({ method: "GET", url: "/api/mcp" });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().ok).toBe(true);
+    expect(response.json().data).toEqual([]);
+  });
+
+  it("shows MCP server content through the CLI", async () => {
+    const app = await createServer(makeConfig());
+    const response = await app.inject({ method: "GET", url: "/api/mcp/weather" });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().ok).toBe(true);
+    expect(response.json().data).toEqual(
+      expect.objectContaining({
+        name: "weather",
+        content: expect.stringContaining("[mcp_servers.weather]"),
+      }),
+    );
+  });
+
+  it("queues MCP install with --content and rejects oversized content", async () => {
+    const app = await createServer(makeConfig());
+    const content = '[mcp_servers.weather]\ncommand = "uvx"\n';
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/mcp/install",
+      payload: { content },
+    });
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json().job.type).toBe("mcp.install");
+    const job = await waitForJob(app, accepted.json().job.id, "succeeded");
+    expect(job.result.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "mcp",
+      "install",
+      "--content",
+      content,
+    ]);
+
+    const oversized = "x".repeat(64 * 1024 + 1);
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/mcp/install",
+      payload: { content: oversized },
+    });
+    await app.close();
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().error).toContain("exceeds");
+  });
+
+  it("queues MCP edit with --content and rejects oversized content", async () => {
+    const app = await createServer(makeConfig());
+    const content = '[mcp_servers.weather]\ncommand = "npx"\n';
+    const accepted = await app.inject({
+      method: "PUT",
+      url: "/api/mcp/weather",
+      payload: { content },
+    });
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json().job.type).toBe("mcp.edit");
+    const job = await waitForJob(app, accepted.json().job.id, "succeeded");
+    expect(job.result.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "mcp",
+      "edit",
+      "weather",
+      "--content",
+      content,
+    ]);
+
+    const oversized = "x".repeat(64 * 1024 + 1);
+    const rejected = await app.inject({
+      method: "PUT",
+      url: "/api/mcp/weather",
+      payload: { content: oversized },
+    });
+    await app.close();
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().error).toContain("exceeds");
+  });
+
+  it("queues MCP remove and sync through WriteJobQueue", async () => {
+    const app = await createServer(makeConfig());
+    const remove = await app.inject({
+      method: "DELETE",
+      url: "/api/mcp/weather",
+      payload: { confirm: true },
+    });
+    expect(remove.statusCode).toBe(202);
+    expect(remove.json().job.type).toBe("mcp.remove");
+    const removeJob = await waitForJob(app, remove.json().job.id, "succeeded");
+    expect(removeJob.result.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "mcp",
+      "remove",
+      "weather",
+      "--yes",
+    ]);
+
+    const sync = await app.inject({
+      method: "POST",
+      url: "/api/mcp/sync",
+      payload: { preset: "research" },
+    });
+    expect(sync.statusCode).toBe(202);
+    expect(sync.json().job.type).toBe("mcp.sync");
+    const syncJob = await waitForJob(app, sync.json().job.id, "succeeded");
+    await app.close();
+    expect(syncJob.result.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "mcp",
+      "sync",
+      "--preset",
+      "research",
+    ]);
+  });
+
+  it("queues unified preset apply as a single WriteJobQueue job", async () => {
+    const app = await createServer(makeConfig());
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/presets/research/apply",
+      payload: { confirm: true },
+    });
+    expect(response.statusCode).toBe(202);
+    expect(response.json().job.type).toBe("presets.apply");
+    const job = await waitForJob(app, response.json().job.id, "succeeded");
+    await app.close();
+    // One CLI invocation: presets apply already serializes skills + MCP.
+    expect(job.result.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "presets",
+      "apply",
+      "research",
+    ]);
+  });
+
+  it("queues unified deactivate with explicit preset body", async () => {
+    const app = await createServer(makeConfig());
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/presets/deactivate",
+      payload: { confirm: true, preset: "research" },
+    });
+    expect(response.statusCode).toBe(202);
+    expect(response.json().job.type).toBe("presets.deactivate");
+    const job = await waitForJob(app, response.json().job.id, "succeeded");
+    await app.close();
+    expect(job.result.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "presets",
+      "deactivate",
+      "research",
+    ]);
+  });
+
+  it("queues unified deactivate against the active preset when body omits preset", async () => {
+    const app = await createServer(makeConfig());
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/presets/deactivate",
+      payload: { confirm: true },
+    });
+    expect(response.statusCode).toBe(202);
+    expect(response.json().job.type).toBe("presets.deactivate");
+    const job = await waitForJob(app, response.json().job.id, "succeeded");
+    await app.close();
+    expect(job.result.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "presets",
+      "deactivate",
+      "active-preset",
+    ]);
+  });
+
+  it("queues preset MCP membership add/remove and lists membership", async () => {
+    const app = await createServer(makeConfig());
+    const list = await app.inject({ method: "GET", url: "/api/presets/research/mcp" });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().data).toEqual([]);
+
+    const add = await app.inject({
+      method: "POST",
+      url: "/api/presets/research/mcp",
+      payload: { servers: ["weather"] },
+    });
+    expect(add.statusCode).toBe(202);
+    expect(add.json().job.type).toBe("presets.addMcp");
+    const addJob = await waitForJob(app, add.json().job.id, "succeeded");
+    expect(addJob.result.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "presets",
+      "add-mcp",
+      "research",
+      "weather",
+    ]);
+
+    const remove = await app.inject({
+      method: "DELETE",
+      url: "/api/presets/research/mcp",
+      payload: { servers: ["weather"] },
+    });
+    expect(remove.statusCode).toBe(202);
+    expect(remove.json().job.type).toBe("presets.removeMcp");
+    const removeJob = await waitForJob(app, remove.json().job.id, "succeeded");
+    await app.close();
+    expect(removeJob.result.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "presets",
+      "remove-mcp",
+      "research",
+      "weather",
+    ]);
+  });
+
+  it("extends GET /api/tools with MCP settings", async () => {
+    const app = await createServer(makeConfig());
+    const response = await app.inject({ method: "GET", url: "/api/tools" });
+    await app.close();
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual([
+      expect.objectContaining({
+        key: "codex",
+        supported_mcp_formats: ["toml"],
+        mcp_output_format: "toml",
+        mcp_output_dir: expect.any(String),
+      }),
+    ]);
+  });
+
+  it("queues PUT /api/tools/:key/mcp for supported format and rejects unsupported", async () => {
+    const app = await createServer(makeConfig());
+    const accepted = await app.inject({
+      method: "PUT",
+      url: "/api/tools/codex/mcp",
+      payload: { mcp_output_dir: "/tmp/mcp-out", mcp_output_format: "toml" },
+    });
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json().job.type).toBe("tools.setMcp");
+    const job = await waitForJob(app, accepted.json().job.id, "succeeded");
+    expect(job.result.args).toEqual([
+      "--json",
+      "--skills-root",
+      "/tmp/skills root",
+      "tools",
+      "set-mcp",
+      "codex",
+      "--output-dir",
+      "/tmp/mcp-out",
+      "--format",
+      "toml",
+    ]);
+
+    const unsupported = await app.inject({
+      method: "PUT",
+      url: "/api/tools/codex/mcp",
+      payload: { mcp_output_format: "json" },
+    });
+    expect(unsupported.statusCode).toBe(400);
+    expect(unsupported.json().error).toBe("unsupported_mcp_format");
+
+    const invalid = await app.inject({
+      method: "PUT",
+      url: "/api/tools/codex/mcp",
+      payload: { mcp_output_format: "yaml" },
+    });
+    await app.close();
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().error).toContain("toml");
+  });
+
 });

@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 6;
+const LATEST_VERSION: u32 = 8;
 
 /// Run all pending migrations on the database.
 ///
@@ -53,6 +53,8 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         3 => migrate_v3_to_v4(conn),
         4 => migrate_v4_to_v5(conn),
         5 => migrate_v5_to_v6(conn),
+        6 => migrate_v6_to_v7(conn),
+        7 => migrate_v7_to_v8(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -275,6 +277,40 @@ fn migrate_v5_to_v6(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v6 → v7: MCP server library tables.
+///
+/// `mcp_servers` is the central library of MCP configs (one row per server).
+/// `scenario_mcp_servers` is the preset membership join table. There is no
+/// `enabled` column — disabling a server means removing it from the preset.
+fn migrate_v6_to_v7(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS mcp_servers (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            content TEXT NOT NULL,
+            central_path TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS scenario_mcp_servers (
+            scenario_id TEXT NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
+            mcp_id TEXT NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+            added_at INTEGER,
+            PRIMARY KEY(scenario_id, mcp_id)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+/// v7 → v8: optional human-readable description for MCP library entries.
+fn migrate_v7_to_v8(conn: &Connection) -> Result<()> {
+    add_column_if_missing(conn, "mcp_servers", "description", "TEXT")?;
+    Ok(())
+}
+
 // ── Helpers ──
 
 fn add_column_if_missing(
@@ -343,6 +379,109 @@ mod tests {
         assert!(tables.contains(&"skill_tags".to_string()));
         assert!(tables.contains(&"scenario_skill_tools".to_string()));
         assert!(tables.contains(&"audit_log".to_string()));
+        assert!(tables.contains(&"mcp_servers".to_string()));
+        assert!(tables.contains(&"scenario_mcp_servers".to_string()));
+    }
+
+    #[test]
+    fn test_v6_database_upgrades_to_v7() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+
+        // Minimal v6 fixture: core tables present, user_version = 6, no MCP tables.
+        conn.execute_batch(
+            "
+            CREATE TABLE skills (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                source_type TEXT NOT NULL,
+                source_ref TEXT,
+                source_ref_resolved TEXT,
+                source_subpath TEXT,
+                source_branch TEXT,
+                source_revision TEXT,
+                remote_revision TEXT,
+                central_path TEXT NOT NULL UNIQUE,
+                content_hash TEXT,
+                enabled INTEGER DEFAULT 1,
+                created_at INTEGER,
+                updated_at INTEGER,
+                status TEXT DEFAULT 'ok',
+                update_status TEXT DEFAULT 'unknown',
+                last_checked_at INTEGER,
+                last_check_error TEXT
+            );
+            CREATE TABLE scenarios (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                icon TEXT,
+                sort_order INTEGER DEFAULT 0,
+                created_at INTEGER,
+                updated_at INTEGER
+            );
+            CREATE TABLE skill_targets (
+                id TEXT PRIMARY KEY,
+                skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+                tool TEXT NOT NULL,
+                target_path TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                status TEXT DEFAULT 'ok',
+                synced_at INTEGER,
+                last_error TEXT,
+                source_hash TEXT,
+                UNIQUE(skill_id, tool)
+            );
+            PRAGMA user_version = 6;
+            ",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(tables.contains(&"mcp_servers".to_string()));
+        assert!(tables.contains(&"scenario_mcp_servers".to_string()));
+
+        // Cascade on delete: insert a server + membership, delete server, membership gone.
+        conn.execute(
+            "INSERT INTO scenarios (id, name, created_at, updated_at) VALUES ('s1', 'S', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mcp_servers (id, name, content, central_path, created_at, updated_at)
+             VALUES ('m1', 'weather', 'x', '/tmp/x', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO scenario_mcp_servers (scenario_id, mcp_id, added_at) VALUES ('s1', 'm1', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM mcp_servers WHERE id = 'm1'", [])
+            .unwrap();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scenario_mcp_servers WHERE mcp_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, LATEST_VERSION);
     }
 
     #[test]

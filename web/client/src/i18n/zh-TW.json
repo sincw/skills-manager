@@ -4,7 +4,7 @@
   },
   "sidebar": {
     "dashboard": "Dashboard",
-    "mySkills": "技能庫",
+    "mySkills": "技能/MCP",
     "globalWorkspace": "全域工作區",
     "lobsterAgents": "龍蝦 Agent",
     "installSkills": "安裝 Skills",
@@ -12,7 +12,8 @@
     "newPreset": "新增 Preset",
     "projects": "專案工作區",
     "addProject": "關聯專案",
-    "settings": "設定"
+    "settings": "設定",
+    "mcpLibrary": "安裝MCP"
   },
   "help": {
     "eyebrow": "操作指南",
@@ -69,7 +70,7 @@
   },
   "dashboard": {
     "greeting": "你好！",
-    "summary": "Library 中 {{skills}} 個 Skills · 已接入 {{agents}} 個 Agent · {{projects}} 個 Project",
+    "summary": "管理中心有 {{skills}} 個技能、{{mcp}} 個 MCP，已連接 {{agents}} 個 Agent、{{projects}} 個專案。",
     "librarySkills": "Library Skills",
     "syncCoverage": "同步覆蓋",
     "connectedAgents": "已接入 Agent",
@@ -77,10 +78,16 @@
     "notSynced": "未同步",
     "scanImport": "掃描本機 Skills 匯入",
     "installNew": "安裝新 Skills",
-    "recentActivity": "近期動態"
+    "recentActivity": "近期動態",
+    "libraryMcp": "MCP 庫",
+    "mcpCapableAgents": "支援 MCP 的 Agent",
+    "installMcp": "安裝 MCP",
+    "recentMcp": "最近 MCP",
+    "mcpInPresets": "屬於 {{count}} 個 Preset",
+    "mcpNoPresets": "未加入 Preset"
   },
   "mySkills": {
-    "title": "技能庫",
+    "title": "技能/MCP",
     "applyToDefault": "套用 Preset",
     "applied": "已套用",
     "notAppliedYet": "尚未套用",
@@ -239,7 +246,23 @@
     "batchEnable": "啟用 {{count}} 個",
     "batchDisable": "停用 {{count}} 個",
     "batchEnabled": "已啟用 {{count}} 個 Skill",
-    "batchDisabled": "已停用 {{count}} 個 Skill"
+    "batchDisabled": "已停用 {{count}} 個 Skill",
+    "tabs": {
+      "skills": "技能庫 {{count}}",
+      "mcp": "MCP庫 {{count}}"
+    },
+    "mcp": {
+      "selectServer": "選擇要新增的 MCP 伺服器…",
+      "add": "新增",
+      "remove": "移除",
+      "added": "已新增 {{name}}",
+      "removed": "已移除 {{name}}",
+      "empty": "此 Preset 還沒有 MCP 伺服器",
+      "emptyHint": "從 MCP 庫中選擇伺服器加入此 Preset。",
+      "noCommand": "无 command",
+      "emptyReadOnlyHint": "目前 active preset 沒有 MCP 伺服器。請在全域工作區或 MCP 庫中管理。",
+      "edit": "編輯"
+    }
   },
   "install": {
     "title": "安裝 Skills",
@@ -527,7 +550,19 @@
     "gitErrorRejected": "遠端有新的更新，需要先合併後再同步。",
     "gitErrorUnrelatedHistories": "本機倉庫與遠端倉庫歷史不一致。請打開「修復同步設定」選擇處理方式。",
     "gitErrorNoUpstream": "尚未建立遠端追蹤關係。請打開「修復同步設定」處理。",
-    "gitErrorGeneric": "Git 操作失敗，請檢查設定中的遠端倉庫位址後重試。"
+    "gitErrorGeneric": "Git 操作失敗，請檢查設定中的遠端倉庫位址後重試。",
+    "mcpOutputDir": "MCP 輸出目錄",
+    "mcpOutputDirPlaceholder": "MCP profile 輸出目錄",
+    "mcpOutputDirEmpty": "未設定 MCP 輸出目錄",
+    "mcpOutputFormat": "MCP 輸出格式",
+    "mcpPathSaved": "MCP 輸出目錄已儲存",
+    "mcpFormatSaved": "MCP 輸出格式已儲存",
+    "mcpSupport": "支援 MCP",
+    "mcpSupportOn": "已開啟 profile MCP 同步",
+    "mcpSupportOff": "已關閉 profile MCP 同步",
+    "mcpSupportEnabled": "已開啟此 Agent 的 MCP 支援",
+    "mcpSupportDisabled": "已關閉此 Agent 的 MCP 支援",
+    "mcpFilename": "檔名"
   },
   "common": {
     "loading": "載入中...",
@@ -725,7 +760,11 @@
     "skillDirectoryNotFound": "找不到 Skill 目錄",
     "batchEditTags": "標籤 ({{count}})",
     "batchTagsUpdated": "已更新 {{count}} 個中心 Skill 的標籤",
-    "batchTagsFailed": "{{count}} 個中心 Skill 標籤更新失敗"
+    "batchTagsFailed": "{{count}} 個中心 Skill 標籤更新失敗",
+    "tabs": {
+      "skills": "技能庫 {{count}}",
+      "mcp": "MCP庫 {{count}}"
+    }
   },
   "presetActions": {
     "button": "套用 Preset",
@@ -758,7 +797,10 @@
     "statusPartial": "{{installed}} / {{total}}",
     "statusInactive": "未加入",
     "activate": "啟用",
-    "deactivate": "取消啟用"
+    "deactivate": "取消啟用",
+    "appliedToast": "已套用 Preset「{{name}}」（含 MCP）",
+    "deactivatedToast": "已停用 Preset「{{name}}」（含 MCP 清理）",
+    "mcpGlobalNotice": "MCP 設定全域生效，不限於目前專案"
   },
   "presetBar": {
     "shiftClickHint": "{{name}} · Shift+點擊直接切換",
@@ -822,6 +864,133 @@
         "centerNewer": "中心有變更",
         "diverged": "衝突"
       }
+    },
+    "tabs": {
+      "skills": "技能庫 {{count}}",
+      "mcp": "MCP庫 {{count}}"
+    },
+    "mcp": {
+      "server": "MCP 伺服器",
+      "installed": "MCP 已安裝到庫",
+      "installedAndJoined": "已安裝 {{name}} 並加入 Preset「{{preset}}」",
+      "profile": {
+        "title": "MCP Profile 狀態",
+        "subtitle": "目前工具：{{tool}}（profile 寫在工具全域設定目錄）",
+        "activePreset": "Active Preset",
+        "status": "狀態",
+        "path": "輸出路徑",
+        "pathPending": "尚未解析路徑（點擊重新整理）",
+        "pathNA": "不適用",
+        "none": "無",
+        "noActivePreset": "無 active preset",
+        "unsupported": "本工具不支援 profile 型 MCP",
+        "unknown": "未知",
+        "written": "已寫入 profile 檔案",
+        "skipped": "已跳過（{{reason}}）",
+        "launch": "啟動參數",
+        "launchGeneric": "profile 參數：{{arg}}",
+        "namingHint": "檔名等於 Preset 名：套用「{{example}}」會寫入 {{example}}.config.toml，而不是 Default.config.toml。取消套用後檔案保留，內容置為空節 [mcp_servers]。",
+        "unsupportedHint": "本階段僅 Codex 等支援 profile 的工具會寫出 MCP 設定；apply 時其餘工具會被 skip。可在 MCP 庫中管理伺服器設定。",
+        "writtenEmpty": "已寫入（目前為空節 [mcp_servers]，無 MCP 成員）",
+        "subtitleReadonly": "MCP 設定全域生效，專案頁僅檢視（不在此安裝或改成員）",
+        "projectReadonlyHint": "安裝與成員調整請到全域工作區或",
+        "toolFallback": "支援 profile 的工具",
+        "supportedBadge": "支援 MCP",
+        "unsupportedBadge": "不支援 MCP",
+        "unsupportedHideHint": "此 Agent 未開啟 profile MCP。可在設定中打開「支援 MCP」，或切換到 Codex 等已支援的工具。",
+        "managedFileHint": "整檔托管：切換 Preset 會整檔覆蓋 {{file}}（非 codex 式 profile 疊層）。新開工作階段後生效。"
+      },
+      "install": {
+        "title": "安裝到 MCP 庫",
+        "button": "安裝 MCP",
+        "joinActive": "同時加入目前 Preset「{{name}}」並同步 profile",
+        "joinDisabled": "無 active preset，安裝後僅進入 MCP 庫（請先套用一個 Preset）"
+      },
+      "members": {
+        "title": "Preset「{{name}}」的 MCP 成員",
+        "titleNoPreset": "MCP 成員",
+        "noActiveTitle": "先套用一個 Preset",
+        "noActiveHint": "MCP 成員掛在 active preset 上。使用上方 Preset 列套用後，可在此增刪伺服器。"
+      }
+    }
+  },
+  "mcpLibrary": {
+    "title": "安裝MCP",
+    "install": "安裝 MCP",
+    "installTitle": "從原始 TOML 安裝",
+    "installHint": "貼上包含 [mcp_servers.<name>] 的 TOML；服務名從 section 解析，無需單獨填寫。",
+    "installed": "MCP 伺服器已安裝",
+    "updated": "MCP 伺服器已更新",
+    "deleted": "MCP 伺服器已刪除",
+    "empty": "還沒有 MCP 伺服器",
+    "emptyHint": "點擊「安裝 MCP」貼上 TOML 內容即可新增。",
+    "presetCount": "屬於 {{count}} 個 Preset",
+    "noPresets": "未加入任何 Preset",
+    "edit": "編輯",
+    "delete": "刪除",
+    "deleteTitle": "刪除 MCP 伺服器",
+    "deleteMessage": "確定刪除 MCP 伺服器「{{name}}」？它也會從所有 Preset 中移除。",
+    "command": "Command",
+    "presets": "Presets",
+    "editHint": "就地更新 TOML 內容；伺服器名保持不變。",
+    "save": "儲存",
+    "content": "完整 TOML",
+    "selectPrompt": "選擇一個 MCP 伺服器",
+    "selectHint": "從左側列表選擇，或安裝一個新的。",
+    "description": "描述",
+    "optional": "(可選)",
+    "descriptionPlaceholder": "用於列表展示的簡短說明，例如「天氣查詢」"
+  },
+  "web": {
+    "nav": {
+      "mcp": "MCP庫"
+    },
+    "mcp": {
+      "title": "MCP庫",
+      "description": "管理中央 MCP Server 庫：安裝、檢視、編輯、刪除。",
+      "install": "安装",
+      "installTitle": "從原始 TOML 安裝",
+      "installHint": "貼上包含 [mcp_servers.<name>] 的 TOML；服務名從 section 解析。",
+      "installQueued": "MCP 安裝已排隊",
+      "edit": "編輯",
+      "editTitle": "編輯 TOML",
+      "editHint": "就地更新內容；伺服器名保持不變。",
+      "editQueued": "MCP 編輯已排隊",
+      "save": "儲存",
+      "delete": "刪除",
+      "deleteTitle": "刪除 MCP 伺服器",
+      "deleteMessage": "確定刪除「{{name}}」？",
+      "deleteQueued": "MCP 刪除已排隊",
+      "noServers": "沒有 MCP 伺服器",
+      "noServersDescription": "貼上原始 TOML 安裝第一個伺服器。",
+      "noServerSelected": "未選擇伺服器",
+      "noServerSelectedDescription": "從左側列表選擇一個 MCP 伺服器。",
+      "presetMembership": "屬於 {{count}} 個 Preset",
+      "noPresets": "未加入 Preset",
+      "command": "Command",
+      "content": "完整 TOML"
+    },
+    "presets": {
+      "tabs": {
+        "skills": "技能庫 {{count}}",
+        "mcp": "MCP庫 {{count}}"
+      },
+      "mcpMembership": "MCP 成員",
+      "mcpSelectPlaceholder": "選擇 MCP 伺服器…",
+      "mcpAddQueued": "MCP 已加入 Preset",
+      "mcpRemoveQueued": "MCP 已從 Preset 移除",
+      "presetMcp": "Preset 的 MCP 伺服器",
+      "noPresetMcp": "此 Preset 還沒有 MCP 伺服器。",
+      "noCommand": "無 command",
+      "removeMcp": "移除 MCP"
+    },
+    "tools": {
+      "mcpOutputDir": "MCP 輸出目錄",
+      "mcpOutputDirPlaceholder": "MCP profile 輸出目錄",
+      "mcpOutputFormat": "MCP 輸出格式",
+      "mcpSaved": "MCP 設定已儲存",
+      "saveMcp": "儲存 MCP 設定",
+      "jsonHiddenHint": "此工具不支援 JSON 格式。"
     }
   }
 }

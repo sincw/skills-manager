@@ -11,7 +11,8 @@ use super::crypto;
 const SENSITIVE_KEYS: &[&str] = &["proxy_url", "git_backup_remote_url"];
 
 pub struct SkillStore {
-    conn: Mutex<Connection>,
+    /// Shared with sibling core modules (e.g. `mcp_store`) that extend the store API.
+    pub(crate) conn: Mutex<Connection>,
     secret_key: [u8; 32],
 }
 

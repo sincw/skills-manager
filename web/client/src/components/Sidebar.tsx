@@ -15,6 +15,7 @@ import {
   Link2,
   ChevronDown,
   ChevronRight,
+  Server,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -159,6 +160,7 @@ export function Sidebar() {
   const NAV_ITEMS = [
     { name: t("sidebar.dashboard"), path: "/", icon: LayoutDashboard },
     { name: t("sidebar.mySkills"), path: "/my-skills", icon: Layers },
+    { name: t("sidebar.mcpLibrary"), path: "/mcp", icon: Server },
     { name: t("sidebar.installSkills"), path: "/install", icon: Download },
   ];
 

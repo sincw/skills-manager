@@ -4,7 +4,7 @@
   },
   "sidebar": {
     "dashboard": "Dashboard",
-    "mySkills": "技能库",
+    "mySkills": "技能/MCP",
     "globalWorkspace": "全局工作区",
     "lobsterAgents": "龙虾 Agent",
     "installSkills": "安装 Skills",
@@ -12,7 +12,8 @@
     "newPreset": "新建 Preset",
     "projects": "项目工作区",
     "addProject": "关联项目",
-    "settings": "设置"
+    "settings": "设置",
+    "mcpLibrary": "安装MCP"
   },
   "help": {
     "eyebrow": "操作指南",
@@ -69,7 +70,7 @@
   },
   "dashboard": {
     "greeting": "你好！",
-    "summary": "Library 中 {{skills}} 个 Skills · 已接入 {{agents}} 个 Agent · {{projects}} 个 Project",
+    "summary": "管理中心有 {{skills}} 个技能、{{mcp}} 个 MCP，已连接 {{agents}} 个 Agent、{{projects}} 个项目。",
     "librarySkills": "Library Skills",
     "syncCoverage": "同步覆盖",
     "connectedAgents": "已接入 Agent",
@@ -77,10 +78,16 @@
     "notSynced": "未同步",
     "scanImport": "扫描本地 Skills 导入",
     "installNew": "安装新 Skills",
-    "recentActivity": "近期动态"
+    "recentActivity": "近期动态",
+    "libraryMcp": "MCP 库",
+    "mcpCapableAgents": "支持 MCP 的 Agent",
+    "installMcp": "安装 MCP",
+    "recentMcp": "最近 MCP",
+    "mcpInPresets": "属于 {{count}} 个 Preset",
+    "mcpNoPresets": "未加入 Preset"
   },
   "mySkills": {
-    "title": "技能库",
+    "title": "技能/MCP",
     "applyToDefault": "应用 Preset",
     "applied": "已应用",
     "notAppliedYet": "尚未应用",
@@ -282,6 +289,22 @@
       "addButton": "添加",
       "clickToRemove": "点击标记为移除",
       "undoRemove": "点击保留此标签"
+    },
+    "tabs": {
+      "skills": "技能库 {{count}}",
+      "mcp": "MCP库 {{count}}"
+    },
+    "mcp": {
+      "selectServer": "选择要添加的 MCP 服务器…",
+      "add": "添加",
+      "remove": "移除",
+      "added": "已添加 {{name}}",
+      "removed": "已移除 {{name}}",
+      "empty": "此 Preset 还没有 MCP 服务器",
+      "emptyHint": "从 MCP 库中选择服务器加入此 Preset。",
+      "noCommand": "无 command",
+      "emptyReadOnlyHint": "当前 active preset 没有 MCP 服务器。请在全局工作区或 MCP 库中管理。",
+      "edit": "编辑"
     }
   },
   "install": {
@@ -592,7 +615,19 @@
     "trayIconDesc": "在系统托盘中显示图标，便于快速执行显示和退出操作。",
     "trayIcon_on": "显示",
     "trayIcon_off": "隐藏",
-    "trayIconOffHint": "托盘图标已隐藏，关闭窗口时将直接退出应用。"
+    "trayIconOffHint": "托盘图标已隐藏，关闭窗口时将直接退出应用。",
+    "mcpOutputDir": "MCP 输出目录",
+    "mcpOutputDirPlaceholder": "MCP profile 输出目录",
+    "mcpOutputDirEmpty": "未配置 MCP 输出目录",
+    "mcpOutputFormat": "MCP 输出格式",
+    "mcpPathSaved": "MCP 输出目录已保存",
+    "mcpFormatSaved": "MCP 输出格式已保存",
+    "mcpSupport": "支持 MCP",
+    "mcpSupportOn": "已开启 profile MCP 同步",
+    "mcpSupportOff": "已关闭 profile MCP 同步",
+    "mcpSupportEnabled": "已开启该 Agent 的 MCP 支持",
+    "mcpSupportDisabled": "已关闭该 Agent 的 MCP 支持",
+    "mcpFilename": "文件名"
   },
   "closeAction": {
     "title": "关闭行为",
@@ -809,7 +844,11 @@
     "skillDirectoryNotFound": "未找到 Skill 目录",
     "batchEditTags": "标签 ({{count}})",
     "batchTagsUpdated": "已更新 {{count}} 个中心 Skill 的标签",
-    "batchTagsFailed": "{{count}} 个中心 Skill 标签更新失败"
+    "batchTagsFailed": "{{count}} 个中心 Skill 标签更新失败",
+    "tabs": {
+      "skills": "技能库 {{count}}",
+      "mcp": "MCP库 {{count}}"
+    }
   },
   "presetActions": {
     "button": "应用 Preset",
@@ -842,7 +881,10 @@
     "statusPartial": "{{installed}} / {{total}}",
     "statusInactive": "未添加",
     "activate": "激活",
-    "deactivate": "取消激活"
+    "deactivate": "取消激活",
+    "appliedToast": "已应用 Preset「{{name}}」（含 MCP）",
+    "deactivatedToast": "已停用 Preset「{{name}}」（含 MCP 清理）",
+    "mcpGlobalNotice": "MCP 配置全局生效，不限于当前项目"
   },
   "presetBar": {
     "shiftClickHint": "{{name}} · Shift+点击直接切换",
@@ -906,6 +948,54 @@
         "centerNewer": "中心有变更",
         "diverged": "冲突"
       }
+    },
+    "tabs": {
+      "skills": "技能库 {{count}}",
+      "mcp": "MCP库 {{count}}"
+    },
+    "mcp": {
+      "server": "MCP 服务器",
+      "installed": "MCP 已安装到库",
+      "installedAndJoined": "已安装 {{name}} 并加入 Preset「{{preset}}」",
+      "profile": {
+        "title": "MCP Profile 状态",
+        "subtitle": "当前工具：{{tool}}（profile 写在工具全局配置目录）",
+        "activePreset": "Active Preset",
+        "status": "状态",
+        "path": "输出路径",
+        "pathPending": "尚未解析路径（点击刷新）",
+        "pathNA": "不适用",
+        "none": "无",
+        "noActivePreset": "无 active preset",
+        "unsupported": "本工具不支持 profile 型 MCP",
+        "unknown": "未知",
+        "written": "已写入 profile 文件",
+        "skipped": "已跳过（{{reason}}）",
+        "launch": "启动参数",
+        "launchGeneric": "profile 参数：{{arg}}",
+        "namingHint": "文件名等于 Preset 名：应用「{{example}}」会写入 {{example}}.config.toml，而不是 Default.config.toml。取消应用后文件保留，内容置为空节 [mcp_servers]。",
+        "unsupportedHint": "本阶段仅 Codex 等支持 profile 的工具会写出 MCP 配置；apply 时其余工具会被 skip。可在 MCP 库中管理服务器配置。",
+        "writtenEmpty": "已写入（当前为空节 [mcp_servers]，无 MCP 成员）",
+        "subtitleReadonly": "MCP 配置全局生效，项目页仅查看（不在此安装或改成员）",
+        "projectReadonlyHint": "安装与成员调整请到全局工作区或",
+        "toolFallback": "支持 profile 的工具",
+        "supportedBadge": "支持 MCP",
+        "unsupportedBadge": "不支持 MCP",
+        "unsupportedHideHint": "此 Agent 未开启 profile MCP。可在设置中打开「支持 MCP」，或切换到 Codex 等已支持的工具。",
+        "managedFileHint": "整文件托管：切换 Preset 会整文件覆盖 {{file}}（非 codex 式 profile 叠层）。新开会话后生效。"
+      },
+      "install": {
+        "title": "安装到 MCP 库",
+        "button": "安装 MCP",
+        "joinActive": "同时加入当前 Preset「{{name}}」并同步 profile",
+        "joinDisabled": "无 active preset，安装后仅进入 MCP 库（请先应用一个 Preset）"
+      },
+      "members": {
+        "title": "Preset「{{name}}」的 MCP 成员",
+        "titleNoPreset": "MCP 成员",
+        "noActiveTitle": "先应用一个 Preset",
+        "noActiveHint": "MCP 成员挂在 active preset 上。使用上方 Preset 栏应用后，可在此增删服务器。"
+      }
     }
   },
   "web": {
@@ -965,7 +1055,8 @@
       "tools": "工具",
       "git": "Git 备份",
       "operations": "操作记录",
-      "settings": "设置"
+      "settings": "设置",
+      "mcp": "MCP库"
     },
     "shell": {
       "title": "Skills Manager Web",
@@ -1104,7 +1195,19 @@
       "removeSkill": "移除 Skill",
       "skillRemoveQueued": "Skill 移除任务已加入队列",
       "noPresetSelected": "未选择 Preset",
-      "noPresetSelectedDescription": "选择一个 Preset 查看并执行操作。"
+      "noPresetSelectedDescription": "选择一个 Preset 查看并执行操作。",
+      "tabs": {
+        "skills": "技能库 {{count}}",
+        "mcp": "MCP库 {{count}}"
+      },
+      "mcpMembership": "MCP 成员",
+      "mcpSelectPlaceholder": "选择 MCP 服务器…",
+      "mcpAddQueued": "MCP 已加入 Preset",
+      "mcpRemoveQueued": "MCP 已从 Preset 移除",
+      "presetMcp": "Preset 的 MCP 服务器",
+      "noPresetMcp": "此 Preset 还没有 MCP 服务器。",
+      "noCommand": "无 command",
+      "removeMcp": "移除 MCP"
     },
     "git": {
       "title": "Git 备份",
@@ -1147,7 +1250,13 @@
       "title": "工具",
       "description": "只读查看 CLI 返回的 Agent 安装和启用状态。",
       "noTools": "没有找到工具",
-      "noToolsDescription": "CLI 没有返回任何 Agent/工具记录。"
+      "noToolsDescription": "CLI 没有返回任何 Agent/工具记录。",
+      "mcpOutputDir": "MCP 输出目录",
+      "mcpOutputDirPlaceholder": "MCP profile 输出目录",
+      "mcpOutputFormat": "MCP 输出格式",
+      "mcpSaved": "MCP 设置已保存",
+      "saveMcp": "保存 MCP 设置",
+      "jsonHiddenHint": "此工具不支持 JSON 格式。"
     },
     "operations": {
       "title": "操作记录",
@@ -1158,6 +1267,58 @@
       "commands": "命令",
       "noCommands": "没有命令",
       "noCommandsDescription": "API 请求运行后，CLI 调用会显示在这里。"
+    },
+    "mcp": {
+      "title": "MCP库",
+      "description": "管理中央 MCP Server 库：安装、查看、编辑、删除。",
+      "install": "安装",
+      "installTitle": "从原始 TOML 安装",
+      "installHint": "粘贴包含 [mcp_servers.<name>] 的 TOML；服务名从 section 解析。",
+      "installQueued": "MCP 安装已排队",
+      "edit": "编辑",
+      "editTitle": "编辑 TOML",
+      "editHint": "就地更新内容；服务器名保持不变。",
+      "editQueued": "MCP 编辑已排队",
+      "save": "保存",
+      "delete": "删除",
+      "deleteTitle": "删除 MCP 服务器",
+      "deleteMessage": "确定删除「{{name}}」？",
+      "deleteQueued": "MCP 删除已排队",
+      "noServers": "没有 MCP 服务器",
+      "noServersDescription": "粘贴原始 TOML 安装第一个服务器。",
+      "noServerSelected": "未选择服务器",
+      "noServerSelectedDescription": "从左侧列表选择一个 MCP 服务器。",
+      "presetMembership": "属于 {{count}} 个 Preset",
+      "noPresets": "未加入 Preset",
+      "command": "Command",
+      "content": "完整 TOML"
     }
+  },
+  "mcpLibrary": {
+    "title": "安装MCP",
+    "install": "安装 MCP",
+    "installTitle": "从原始 TOML 安装",
+    "installHint": "粘贴包含 [mcp_servers.<name>] 的 TOML；服务名从 section 解析，无需单独填写。",
+    "installed": "MCP 服务器已安装",
+    "updated": "MCP 服务器已更新",
+    "deleted": "MCP 服务器已删除",
+    "empty": "还没有 MCP 服务器",
+    "emptyHint": "点击「安装 MCP」粘贴 TOML 内容即可添加。",
+    "presetCount": "属于 {{count}} 个 Preset",
+    "noPresets": "未加入任何 Preset",
+    "edit": "编辑",
+    "delete": "删除",
+    "deleteTitle": "删除 MCP 服务器",
+    "deleteMessage": "确定删除 MCP 服务器「{{name}}」？它也会从所有 Preset 中移除。",
+    "command": "Command",
+    "presets": "Presets",
+    "editHint": "就地更新 TOML 内容；服务器名保持不变。",
+    "save": "保存",
+    "content": "完整 TOML",
+    "selectPrompt": "选择一个 MCP 服务器",
+    "selectHint": "从左侧列表选择，或安装一个新的。",
+    "description": "描述",
+    "optional": "(可选)",
+    "descriptionPlaceholder": "用于列表展示的简短说明，例如「天气查询」"
   }
 }

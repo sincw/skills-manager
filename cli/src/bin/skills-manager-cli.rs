@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
 use app_lib::core::{
-    app_state, central_repo, error::AppError, git_backup, git_fetcher, installer,
-    repo_lock::RepoLock, scanner, scenario_service, skill_actions as cmd,
-    skill_metadata, skill_store::SkillStore, skillssh_api, sync_engine,
-    sync_metadata, tool_service, workspace_service,
+    app_state, central_repo, error::AppError, git_backup, git_fetcher, installer, mcp_actions,
+    repo_lock::RepoLock, scanner, scenario_service, skill_actions as cmd, skill_metadata,
+    skill_store::SkillStore, skillssh_api, sync_engine, sync_metadata, tool_service,
+    workspace_service,
 };
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
@@ -29,6 +29,7 @@ enum Commands {
     Repo(RepoArgs),
     Tools(ToolsArgs),
     Skills(SkillsArgs),
+    Mcp(McpArgs),
     Workspaces(WorkspacesArgs),
     #[command(alias = "scenarios")]
     Presets(PresetArgs),
@@ -57,12 +58,108 @@ struct ToolsArgs {
 #[derive(Subcommand, Debug)]
 enum ToolsCommand {
     List,
+    /// Enable or disable a tool (agent) in the global disabled_tools list.
+    SetEnabled {
+        /// Tool adapter key (builtin or custom).
+        key: String,
+        /// Whether the tool is enabled (`true` / `false`).
+        #[arg(long, value_name = "BOOL")]
+        enabled: String,
+    },
+    /// Enable or disable every known tool.
+    SetAllEnabled {
+        /// Whether all tools are enabled (`true` / `false`).
+        #[arg(long, value_name = "BOOL")]
+        enabled: String,
+    },
+    /// Update a tool's MCP output directory and/or output format.
+    SetMcp {
+        /// Tool adapter key (builtin or custom).
+        key: String,
+        /// Absolute MCP output directory override.
+        #[arg(long)]
+        output_dir: Option<String>,
+        /// MCP output format: `toml` or `json`.
+        #[arg(long)]
+        format: Option<String>,
+    },
+    /// Toggle whether a tool participates in profile-based MCP sync.
+    SetMcpSupport {
+        /// Tool adapter key (builtin or custom).
+        key: String,
+        /// Whether profile MCP sync is enabled for this tool (`true` / `false`).
+        #[arg(long, value_name = "BOOL")]
+        enabled: String,
+    },
+    /// Set or clear the MCP output filename for a tool.
+    ///
+    /// When unset each tool defaults to `{preset}.config.{ext}`.
+    /// Pass `--filename mcp.json` for tools that load a single fixed file (e.g. Pi).
+    /// Pass `--filename ""` to force preset-based naming even for tools that
+    /// ship a hard-coded fixed filename.
+    SetMcpFilename {
+        /// Tool adapter key (builtin or custom).
+        key: String,
+        /// MCP output filename. Empty string → use `{preset}.config.{ext}`.
+        /// Omit the flag entirely to restore the per-tool adapter default.
+        #[arg(long, value_name = "FILENAME")]
+        filename: Option<String>,
+    },
 }
 
 #[derive(Args, Debug)]
 struct SkillsArgs {
     #[command(subcommand)]
     command: SkillsCommand,
+}
+
+#[derive(Args, Debug)]
+struct McpArgs {
+    #[command(subcommand)]
+    command: McpCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum McpCommand {
+    /// Install an MCP server from a .toml/.json file path, or inline TOML via --content.
+    Install {
+        /// Path to a .toml or .json MCP config file.
+        path: Option<PathBuf>,
+        /// Inline TOML content (mutually exclusive with path; used by the web server).
+        #[arg(long, conflicts_with = "path")]
+        content: Option<String>,
+        /// Optional human-readable description for list display.
+        #[arg(long)]
+        description: Option<String>,
+    },
+    List,
+    Show {
+        name: String,
+    },
+    /// Update an existing server's content in-place (server name cannot change).
+    Edit {
+        name: String,
+        #[arg(long, conflicts_with = "content")]
+        file: Option<PathBuf>,
+        #[arg(long, conflicts_with = "file")]
+        content: Option<String>,
+        /// Optional human-readable description for list display.
+        /// Pass empty string to clear.
+        #[arg(long)]
+        description: Option<String>,
+    },
+    Remove {
+        name: String,
+        #[arg(long, short)]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Merge the active (or --preset) preset's MCP servers into per-tool profile files.
+    Sync {
+        #[arg(long)]
+        preset: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -279,6 +376,17 @@ enum PresetCommand {
     RemoveSkill {
         preset: String,
         skills: Vec<String>,
+    },
+    AddMcp {
+        preset: String,
+        servers: Vec<String>,
+    },
+    RemoveMcp {
+        preset: String,
+        servers: Vec<String>,
+    },
+    ListMcp {
+        preset: String,
     },
 }
 
@@ -526,6 +634,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Repo(args) => run_repo(args, &store, cli.json),
         Commands::Tools(args) => run_tools(args, &store, cli.json),
         Commands::Skills(args) => run_skills(args, &store, cli.json),
+        Commands::Mcp(args) => run_mcp(args, &store, cli.json),
         Commands::Workspaces(args) => run_workspaces(args, &store, cli.json),
         Commands::Presets(args) => run_presets(args, &store, cli.json),
         Commands::Git(args) => run_git(args, cli.skills_root.is_some(), cli.json),
@@ -565,9 +674,55 @@ fn repo_status(store: &SkillStore) -> RepoStatus {
 
 // ── tools ─────────────────────────────────────────────────────────────────
 
+fn parse_bool_arg(raw: &str, flag: &str) -> anyhow::Result<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => bail!("{flag} must be true or false"),
+    }
+}
+
 fn run_tools(args: ToolsArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
     match args.command {
         ToolsCommand::List => print_json(&tool_service::list_tool_info(store), json),
+        ToolsCommand::SetEnabled { key, enabled } => {
+            let enabled = parse_bool_arg(&enabled, "--enabled")?;
+            let info =
+                tool_service::set_tool_enabled(store, &key, enabled).map_err(map_app_err)?;
+            print_json(&info, json);
+        }
+        ToolsCommand::SetAllEnabled { enabled } => {
+            let enabled = parse_bool_arg(&enabled, "--enabled")?;
+            let infos =
+                tool_service::set_all_tools_enabled(store, enabled).map_err(map_app_err)?;
+            print_json(&infos, json);
+        }
+        ToolsCommand::SetMcp {
+            key,
+            output_dir,
+            format,
+        } => {
+            let info = tool_service::set_tool_mcp_settings(
+                store,
+                &key,
+                output_dir.as_deref(),
+                format.as_deref(),
+            )
+            .map_err(map_app_err)?;
+            print_json(&info, json);
+        }
+        ToolsCommand::SetMcpSupport { key, enabled } => {
+            let enabled = parse_bool_arg(&enabled, "--enabled")?;
+            let info = tool_service::set_tool_mcp_profile_support(store, &key, enabled)
+                .map_err(map_app_err)?;
+            print_json(&info, json);
+        }
+        ToolsCommand::SetMcpFilename { key, filename } => {
+            let info =
+                tool_service::set_tool_mcp_filename(store, &key, filename.as_deref())
+                    .map_err(map_app_err)?;
+            print_json(&info, json);
+        }
     }
     Ok(())
 }
@@ -1820,6 +1975,87 @@ fn run_tag(args: TagArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> 
     Ok(())
 }
 
+// ── mcp ───────────────────────────────────────────────────────────────────
+
+fn run_mcp(args: McpArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
+    match args.command {
+        McpCommand::Install {
+            path,
+            content,
+            description,
+        } => {
+            let desc = description.as_deref();
+            let report = match (path, content) {
+                (Some(p), None) => mcp_actions::install_from_path_with_description(
+                    store, &p, desc,
+                )
+                .map_err(map_app_err)?,
+                (None, Some(c)) => mcp_actions::install_from_content_with_description(
+                    store, &c, desc,
+                )
+                .map_err(map_app_err)?,
+                (None, None) => bail!("mcp install requires a file path or --content"),
+                (Some(_), Some(_)) => {
+                    bail!("mcp install: path and --content are mutually exclusive")
+                }
+            };
+            print_json(&report, json);
+        }
+        McpCommand::List => {
+            print_json(&mcp_actions::list_servers(store).map_err(map_app_err)?, json);
+        }
+        McpCommand::Show { name } => {
+            print_json(
+                &mcp_actions::show_server(store, &name).map_err(map_app_err)?,
+                json,
+            );
+        }
+        McpCommand::Edit {
+            name,
+            file,
+            content,
+            description,
+        } => {
+            if file.is_some() && content.is_some() {
+                bail!("mcp edit: --file and --content are mutually exclusive");
+            }
+            let content_owned = match (file, content) {
+                (Some(p), None) => Some(std::fs::read_to_string(p)?),
+                (None, Some(c)) => Some(c),
+                (None, None) => None,
+                (Some(_), Some(_)) => unreachable!(),
+            };
+            let desc_update = description.as_ref().map(|s| s.as_str());
+            if content_owned.is_none() && desc_update.is_none() {
+                bail!("mcp edit requires --file/--content and/or --description");
+            }
+            let report = mcp_actions::edit_server_with_description(
+                store,
+                &name,
+                content_owned.as_deref(),
+                desc_update.map(Some),
+            )
+            .map_err(map_app_err)?;
+            print_json(&report, json);
+        }
+        McpCommand::Remove {
+            name,
+            yes,
+            dry_run,
+        } => {
+            let report =
+                mcp_actions::remove_server(store, &name, yes, dry_run).map_err(map_app_err)?;
+            print_json(&report, json);
+        }
+        McpCommand::Sync { preset } => {
+            let report =
+                mcp_actions::sync_mcp(store, preset.as_deref()).map_err(map_app_err)?;
+            print_json(&report, json);
+        }
+    }
+    Ok(())
+}
+
 // ── presets ───────────────────────────────────────────────────────────────
 
 fn run_presets(args: PresetArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
@@ -1842,8 +2078,36 @@ fn run_presets(args: PresetArgs, store: &SkillStore, json: bool) -> anyhow::Resu
         }
         PresetCommand::Apply { reference } => {
             let preset = resolve_scenario(store, &reference)?;
+            let old_active_id = store.get_active_scenario_id()?;
+            let old_active = old_active_id
+                .as_ref()
+                .and_then(|id| store.get_all_scenarios().ok()?.into_iter().find(|s| &s.id == id));
+
+            // Skills apply (sets active + syncs skills).
             scenario_service::apply_scenario_to_default(store, &preset.id).map_err(map_app_err)?;
-            print_json(&current_preset(store)?, json);
+
+            // For tools with fixed MCP filenames (e.g. Pi → mcp.json), clearing
+            // the old preset's profile FIRST avoids a double-write race:
+            //  1. clear old → writes empty mcp.json
+            //  2. sync new  → writes correct mcp.json
+            // For per-preset profile tools (Codex), order is still correct.
+            if let Some(old) = old_active.as_ref() {
+                if old.id != preset.id {
+                    let _ = mcp_actions::clear_preset_mcp_profiles(store, old);
+                }
+            }
+
+            // MCP for the newly active preset (after old is cleared).
+            let mcp_report =
+                mcp_actions::sync_mcp(store, Some(&preset.id)).map_err(map_app_err)?;
+
+            print_json(
+                &serde_json::json!({
+                    "preset": current_preset(store)?,
+                    "mcp": mcp_report,
+                }),
+                json,
+            );
         }
         PresetCommand::Deactivate { reference } => {
             let preset = resolve_scenario(store, &reference)?;
@@ -1854,19 +2118,26 @@ fn run_presets(args: PresetArgs, store: &SkillStore, json: bool) -> anyhow::Resu
             if is_active {
                 let next_active = replacement_preset_after_deactivate(store, &preset.id)?;
                 if let Some(next) = next_active.as_ref() {
+                    // Clear old MCP profiles FIRST, then sync the replacement,
+                    // so fixed-filename tools (Pi → mcp.json) are not
+                    // overwritten by a stale clear-after-sync.
                     scenario_service::apply_scenario_to_default(store, &next.id)
                         .map_err(map_app_err)?;
+                    let _ = mcp_actions::clear_preset_mcp_profiles(store, &preset);
+                    let _ = mcp_actions::sync_mcp(store, Some(&next.id));
                 } else {
                     scenario_service::unsync_scenario_skills(store, &preset.id)
                         .map_err(map_app_err)?;
+                    let _ = mcp_actions::clear_preset_mcp_profiles(store, &preset);
                     store.clear_active_scenario()?;
                 }
             } else {
                 // Closing a non-active preset still tears down sync targets for
                 // any skills it shares with the active preset. Unsync this
                 // preset first, then re-sync the active preset so the shared
-                // targets are restored.
+                // targets are restored. Also clear residual MCP profile files.
                 scenario_service::unsync_scenario_skills(store, &preset.id).map_err(map_app_err)?;
+                let _ = mcp_actions::clear_preset_mcp_profiles(store, &preset);
                 if let Some(active_id) = active.as_deref() {
                     scenario_service::sync_scenario_skills(store, active_id)
                         .map_err(map_app_err)?;
@@ -1939,6 +2210,44 @@ fn run_presets(args: PresetArgs, store: &SkillStore, json: bool) -> anyhow::Resu
                 json,
             );
         }
+        PresetCommand::AddMcp { preset, servers } => {
+            let s = resolve_scenario(store, &preset)?;
+            let (added, missing, resynced) =
+                mcp_actions::add_mcp_to_preset(store, &s, &servers).map_err(map_app_err)?;
+            print_json(
+                &serde_json::json!({
+                    "preset_id": s.id,
+                    "preset_name": s.name,
+                    "added": added,
+                    "removed": [],
+                    "missing": missing,
+                    "resynced_preset": resynced,
+                }),
+                json,
+            );
+        }
+        PresetCommand::RemoveMcp { preset, servers } => {
+            let s = resolve_scenario(store, &preset)?;
+            let (removed, missing, resynced) =
+                mcp_actions::remove_mcp_from_preset(store, &s, &servers).map_err(map_app_err)?;
+            print_json(
+                &serde_json::json!({
+                    "preset_id": s.id,
+                    "preset_name": s.name,
+                    "added": [],
+                    "removed": removed,
+                    "missing": missing,
+                    "resynced_preset": resynced,
+                }),
+                json,
+            );
+        }
+        PresetCommand::ListMcp { preset } => {
+            let s = resolve_scenario(store, &preset)?;
+            let servers =
+                mcp_actions::list_mcp_for_preset(store, &s).map_err(map_app_err)?;
+            print_json(&servers, json);
+        }
     }
     Ok(())
 }
@@ -1976,6 +2285,9 @@ fn create_preset(
     description: Option<String>,
     icon: Option<String>,
 ) -> anyhow::Result<PresetInfo> {
+    if let Err(reason) = mcp_actions::validate_preset_name_for_fs(&name) {
+        bail!("invalid_preset_name: {reason}");
+    }
     let now = chrono::Utc::now().timestamp_millis();
     let id = uuid::Uuid::new_v4().to_string();
     let previous_active_id = store.get_active_scenario_id()?;

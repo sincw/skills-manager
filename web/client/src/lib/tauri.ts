@@ -15,6 +15,40 @@ export interface ToolInfo {
   project_relative_skills_dir: string | null;
   has_project_path_override: boolean;
   category: ToolCategory;
+  supports_mcp_profile?: boolean;
+  supported_mcp_formats?: string[];
+  mcp_output_dir?: string | null;
+  mcp_output_format?: string;
+  has_mcp_path_override?: boolean;
+  /** Fixed filename for whole-file MCP tools (e.g. Pi `mcp.json`). */
+  mcp_output_filename?: string | null;
+}
+
+export interface McpServerSummary {
+  id: string;
+  name: string;
+  description?: string | null;
+  presets: string[];
+  created_at: number;
+  updated_at: number;
+}
+
+export interface McpServerDetail extends McpServerSummary {
+  content: string;
+  central_path: string;
+}
+
+export interface McpToolSyncStatus {
+  status: string;
+  path?: string;
+  reason?: string;
+}
+
+export interface McpSyncResult {
+  preset: string;
+  profile_arg: string;
+  tools: Record<string, McpToolSyncStatus>;
+  preset_name_error?: string | null;
 }
 
 export interface ManagedSkill {
@@ -405,6 +439,13 @@ function post<T>(url: string, body: unknown = {}): Promise<T> {
   });
 }
 
+function put<T>(url: string, body: unknown = {}): Promise<T> {
+  return request<T>(url, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
 function del<T>(url: string, body: unknown = {}): Promise<T> {
   return request<T>(url, {
     method: "DELETE",
@@ -546,14 +587,25 @@ export const installSkill = (input: {
 // Tools
 export const getToolStatus = () => get<ToolInfo[]>("/api/tools");
 
-export const setToolEnabled = (key: string, enabled: boolean) => {
-  ignoreArgs(key, enabled);
-  return unsupported("Tool enable/disable");
-};
-export const setAllToolsEnabled = (enabled: boolean) => {
-  ignoreArgs(enabled);
-  return unsupported("Tool enable/disable");
-};
+export const setToolEnabled = (key: string, enabled: boolean) =>
+  waitForQueuedWrite(
+    put<WebJob>(`/api/tools/${encodeRef(key)}/enabled`, { enabled }),
+  );
+
+export const setAllToolsEnabled = (enabled: boolean) =>
+  waitForQueuedWrite(put<WebJob>("/api/tools/enabled", { enabled }));
+
+export const setToolMcpSupport = (key: string, enabled: boolean) =>
+  waitForQueuedWrite(
+    put<WebJob>(`/api/tools/${encodeRef(key)}/mcp-support`, { enabled }),
+  );
+
+export const setToolMcpFilename = (key: string, filename?: string | null) =>
+  waitForQueuedWrite(
+    put<WebJob>(`/api/tools/${encodeRef(key)}/mcp-filename`, {
+      ...(filename !== undefined ? { filename: filename ?? "" } : {}),
+    }),
+  );
 export const getToolOrder = async () => JSON.parse(localStorage.getItem("skills-manager:tool-order") ?? "[]") as string[];
 export const setToolOrder = async (order: string[]) => {
   localStorage.setItem("skills-manager:tool-order", JSON.stringify(order));
@@ -907,7 +959,7 @@ export const deletePreset = (id: string) => {
 };
 export const switchPreset = (id: string) => applyPresetToDefault(id);
 export const applyPresetToDefault = (id: string) =>
-  post<WebJob>(`/api/presets/${encodeRef(id)}/apply`, { confirm: true });
+  waitForQueuedWrite(post<WebJob>(`/api/presets/${encodeRef(id)}/apply`, { confirm: true }));
 export const addSkillToPreset = (skillId: string, presetId: string) =>
   post<unknown>(`/api/presets/${encodeRef(presetId)}/skills`, { skills: [skillId] });
 export const removeSkillFromPreset = (skillId: string, presetId: string) =>
@@ -1013,8 +1065,15 @@ export const deleteGlobalLocalSkill = async (agentKey: string, relativePath: str
 export const previewPreset = (id: string) =>
   get<unknown[]>(`/api/presets/${encodeRef(id)}/preview`);
 
-export const deactivatePreset = (id: string) =>
-  post<WebJob>(`/api/presets/${encodeRef(id)}/deactivate`, { confirm: true });
+export const deactivatePreset = (id?: string) =>
+  waitForQueuedWrite(
+    post<WebJob>("/api/presets/deactivate", {
+      confirm: true,
+      ...(id ? { preset: id } : {}),
+    }),
+  );
+
+export const applyPreset = (id: string) => applyPresetToDefault(id);
 
 export const syncPreset = (preset?: string, tool?: string, dryRun = false) =>
   post<unknown>("/api/skills/sync", {
@@ -1028,3 +1087,70 @@ export const updateAllSkills = () => post<WebJob>("/api/skills/update-all");
 
 export const exportSkill = (reference: string, dest: string) =>
   post<WebJob>(`/api/skills/${encodeRef(reference)}/export`, { dest });
+
+// MCP library
+export const getMcpServers = () => get<McpServerSummary[]>("/api/mcp");
+
+export const getMcpServer = (name: string) =>
+  get<McpServerDetail>(`/api/mcp/${encodeRef(name)}`);
+
+export const installMcpServer = (content: string, description?: string) =>
+  waitForQueuedWrite(
+    post<WebJob>("/api/mcp/install", {
+      content,
+      description: description?.trim() ? description.trim() : undefined,
+    }),
+  );
+
+export const editMcpServer = (
+  name: string,
+  content?: string,
+  description?: string | null,
+) =>
+  waitForQueuedWrite(
+    put<WebJob>(`/api/mcp/${encodeRef(name)}`, {
+      content: content?.trim() ? content : undefined,
+      ...(description !== undefined ? { description: description ?? "" } : {}),
+    }),
+  );
+
+export const removeMcpServer = (name: string) =>
+  waitForQueuedWrite(del<WebJob>(`/api/mcp/${encodeRef(name)}`, { confirm: true }));
+
+export const syncMcp = async (preset?: string): Promise<McpSyncResult | null> => {
+  const job = await waitForQueuedWrite(post<WebJob>("/api/mcp/sync", { preset }));
+  const result = job.result;
+  if (!result || typeof result !== "object") return null;
+  return result as McpSyncResult;
+};
+
+export const getPresetMcpServers = (presetRef: string) =>
+  get<McpServerSummary[]>(`/api/presets/${encodeRef(presetRef)}/mcp`);
+
+export const addMcpToPreset = (presetRef: string, servers: string[]) =>
+  waitForQueuedWrite(
+    post<WebJob>(`/api/presets/${encodeRef(presetRef)}/mcp`, { servers }),
+  );
+
+export const removeMcpFromPreset = (presetRef: string, servers: string[]) =>
+  waitForQueuedWrite(
+    del<WebJob>(`/api/presets/${encodeRef(presetRef)}/mcp`, { servers }),
+  );
+
+export const setToolMcpSettings = (
+  key: string,
+  settings: { mcp_output_dir?: string | null; mcp_output_format?: string | null },
+) =>
+  waitForQueuedWrite(
+    put<WebJob>(`/api/tools/${encodeRef(key)}/mcp`, {
+      mcp_output_dir: settings.mcp_output_dir ?? undefined,
+      mcp_output_format: settings.mcp_output_format ?? undefined,
+    }),
+  );
+
+/** Extract `command` from a single-server MCP TOML content for list excerpts. */
+export function extractMcpCommand(content: string): string | null {
+  const match = content.match(/^\s*command\s*=\s*"([^"]*)"/m)
+    ?? content.match(/^\s*command\s*=\s*'([^']*)'/m);
+  return match?.[1] ?? null;
+}

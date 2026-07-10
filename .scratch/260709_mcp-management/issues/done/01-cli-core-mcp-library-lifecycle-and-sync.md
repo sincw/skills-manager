@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 ## What to build
 
@@ -67,3 +67,18 @@ Key invariants (from PRD + ADRs 0003–0005):
 ## Blocked by
 
 None - can start immediately
+## Comments
+
+### 2026-07-09 — AFK completion
+
+Status: done
+
+Completed CLI MCP vertical slice:
+- migration v6→v7 (`mcp_servers`, `scenario_mcp_servers` + cascade)
+- `central_repo::mcp_dir()` + ensure_central_repo creates `mcp/`
+- `ToolAdapter` / `CustomToolDef` MCP fields + settings (`custom_tool_mcp_paths` / `custom_tool_mcp_formats`)
+- `mcp_store` / `mcp_actions` lifecycle (install/list/show/edit/remove/sync)
+- CLI `mcp` subcommand + `presets add-mcp/remove-mcp/list-mcp`
+- `presets apply` / `deactivate` now sync/clear MCP profiles with skills
+- git_backup snapshots `mcp/` into skills repo as `.mcp/`
+- `cargo test --manifest-path cli/Cargo.toml`: 253 passed

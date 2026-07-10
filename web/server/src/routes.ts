@@ -10,6 +10,8 @@ import {
   boolValue,
   expandLinuxPath,
   limitValue,
+  mcpContent,
+  mcpOutputFormat,
   nonEmptyString,
   optionalString,
   refParam,
@@ -440,6 +442,259 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
   });
 
   app.get("/api/tools", (request, reply) => directCli(request, reply, ctx, ["tools", "list"]));
+  // Bulk enable/disable must be registered before /:key/enabled so "enabled" is not captured as a key.
+  app.put("/api/tools/enabled", (request, reply) => {
+    try {
+      const body = asRecord(request.body);
+      if (body.enabled === undefined || body.enabled === null) {
+        throw new Error("enabled is required");
+      }
+      const enabled = boolValue(body.enabled, "enabled");
+      enqueueJob(request, reply, ctx, "tools.setAllEnabled", { enabled }, [
+        "tools",
+        "set-all-enabled",
+        "--enabled",
+        enabled ? "true" : "false",
+      ]);
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+    }
+  });
+  app.put<{ Params: { key: string } }>("/api/tools/:key/enabled", (request, reply) => {
+    try {
+      const key = refParam(request.params.key);
+      const body = asRecord(request.body);
+      if (body.enabled === undefined || body.enabled === null) {
+        throw new Error("enabled is required");
+      }
+      const enabled = boolValue(body.enabled, "enabled");
+      enqueueJob(request, reply, ctx, "tools.setEnabled", { key, enabled }, [
+        "tools",
+        "set-enabled",
+        key,
+        "--enabled",
+        enabled ? "true" : "false",
+      ]);
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+    }
+  });
+  app.put<{ Params: { key: string } }>("/api/tools/:key/mcp-filename", (request, reply) => {
+    try {
+      const key = refParam(request.params.key);
+      const body = asRecord(request.body);
+      let filename: string | null = null;
+      let hasFilename = false;
+      if (Object.prototype.hasOwnProperty.call(body, "filename")) {
+        hasFilename = true;
+        filename =
+          body.filename === null || body.filename === undefined
+            ? null
+            : optionalString(body.filename, "filename");
+      }
+      const args = ["tools", "set-mcp-filename", key];
+      if (hasFilename) args.push("--filename", filename ?? "");
+      enqueueJob(
+        request,
+        reply,
+        ctx,
+        "tools.setMcpFilename",
+        { key, filename: hasFilename ? (filename ?? "") : "" },
+        args,
+      );
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+    }
+  });
+  app.put<{ Params: { key: string } }>("/api/tools/:key/mcp-support", (request, reply) => {
+    try {
+      const key = refParam(request.params.key);
+      const body = asRecord(request.body);
+      if (body.enabled === undefined || body.enabled === null) {
+        throw new Error("enabled is required");
+      }
+      const enabled = boolValue(body.enabled, "enabled");
+      enqueueJob(request, reply, ctx, "tools.setMcpSupport", { key, enabled }, [
+        "tools",
+        "set-mcp-support",
+        key,
+        "--enabled",
+        enabled ? "true" : "false",
+      ]);
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+    }
+  });
+  app.put<{ Params: { key: string } }>("/api/tools/:key/mcp", async (request, reply) => {
+    let key: string;
+    let outputDirRaw: string | null;
+    let formatRaw: string | null;
+    try {
+      key = refParam(request.params.key);
+      const body = asRecord(request.body);
+      outputDirRaw = optionalString(body.mcp_output_dir ?? body.output_dir, "mcp_output_dir");
+      formatRaw =
+        body.mcp_output_format !== undefined &&
+        body.mcp_output_format !== null &&
+        body.mcp_output_format !== ""
+          ? mcpOutputFormat(body.mcp_output_format)
+          : null;
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+      return;
+    }
+    if (!outputDirRaw && !formatRaw) {
+      reply.code(400).send({
+        ok: false,
+        error: "at least one of mcp_output_dir or mcp_output_format is required",
+      });
+      return;
+    }
+
+    let outputDir: string | null = null;
+    try {
+      outputDir = outputDirRaw ? expandLinuxPath(outputDirRaw) : null;
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid mcp_output_dir",
+      });
+      return;
+    }
+    const args = ["tools", "set-mcp", key];
+    if (outputDir) args.push("--output-dir", outputDir);
+    if (formatRaw) args.push("--format", formatRaw);
+    enqueueJob(
+      request,
+      reply,
+      ctx,
+      "tools.setMcp",
+      { key, mcp_output_dir: outputDir, mcp_output_format: formatRaw },
+      args,
+    );
+  });
+
+  // ── MCP library ──────────────────────────────────────────────────────────
+  app.get("/api/mcp", (request, reply) => directCli(request, reply, ctx, ["mcp", "list"]));
+  app.get<{ Params: { name: string } }>("/api/mcp/:name", (request, reply) =>
+    directCli(request, reply, ctx, ["mcp", "show", refParam(request.params.name)]),
+  );
+  app.post("/api/mcp/install", (request, reply) => {
+    let content: string;
+    let description: string | null;
+    try {
+      const body = asRecord(request.body);
+      content = mcpContent(body.content);
+      description = optionalString(body.description, "description");
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid content",
+      });
+      return;
+    }
+    const args = ["mcp", "install", "--content", content];
+    if (description) args.push("--description", description);
+    enqueueJob(request, reply, ctx, "mcp.install", { content, description }, args);
+  });
+  app.put<{ Params: { name: string } }>("/api/mcp/:name", (request, reply) => {
+    let name: string;
+    let content: string | null;
+    let description: string | null;
+    let hasDescription = false;
+    try {
+      name = refParam(request.params.name);
+      const body = asRecord(request.body);
+      content =
+        body.content !== undefined && body.content !== null && body.content !== ""
+          ? mcpContent(body.content)
+          : null;
+      if (Object.prototype.hasOwnProperty.call(body, "description")) {
+        hasDescription = true;
+        description =
+          body.description === null || body.description === ""
+            ? ""
+            : optionalString(body.description, "description") ?? "";
+      } else {
+        description = null;
+      }
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+      return;
+    }
+    if (!content && !hasDescription) {
+      reply.code(400).send({
+        ok: false,
+        error: "at least one of content or description is required",
+      });
+      return;
+    }
+    const args = ["mcp", "edit", name];
+    if (content) args.push("--content", content);
+    if (hasDescription) args.push("--description", description ?? "");
+    enqueueJob(
+      request,
+      reply,
+      ctx,
+      "mcp.edit",
+      {
+        name,
+        content: content ?? null,
+        description: hasDescription ? description : null,
+      },
+      args,
+    );
+  });
+  app.delete<{ Params: { name: string } }>("/api/mcp/:name", (request, reply) => {
+    try {
+      const name = refParam(request.params.name);
+      const body = asRecord(request.body);
+      requireConfirm(body.confirm, "mcp remove");
+      enqueueJob(request, reply, ctx, "mcp.remove", { name }, [
+        "mcp",
+        "remove",
+        name,
+        "--yes",
+      ]);
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+    }
+  });
+  app.post("/api/mcp/sync", (request, reply) => {
+    try {
+      const body = asRecord(request.body);
+      const preset = optionalString(body.preset, "preset");
+      const args = ["mcp", "sync"];
+      if (preset) args.push("--preset", preset);
+      enqueueJob(request, reply, ctx, "mcp.sync", { preset }, args);
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+    }
+  });
 
   app.get("/api/skills", (request, reply) => directCli(request, reply, ctx, ["skills", "list"]));
   app.get<{ Params: { ref: string } }>("/api/skills/:ref", (request, reply) =>
@@ -646,14 +901,84 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
     directCli(request, reply, ctx, ["presets", "preview", refParam(request.params.ref)]),
   );
   app.post<{ Params: { ref: string } }>("/api/presets/:ref/apply", (request, reply) => {
-    requireConfirm(asRecord(request.body).confirm, "presets apply");
-    const ref = refParam(request.params.ref);
-    enqueueJob(request, reply, ctx, "presets.apply", { ref }, ["presets", "apply", ref]);
+    // Unified apply: CLI `presets apply` already syncs skills + MCP serially.
+    try {
+      requireConfirm(asRecord(request.body).confirm, "presets apply");
+      const ref = refParam(request.params.ref);
+      enqueueJob(request, reply, ctx, "presets.apply", { ref }, ["presets", "apply", ref]);
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+    }
   });
+  // Unified deactivate: body `{ "preset": "<ref>" }` (optional → currently active).
+  // Prefer this over the legacy /:ref/deactivate path so the client can omit the ref.
+  app.post("/api/presets/deactivate", async (request, reply) => {
+    let preset: string | null;
+    try {
+      const body = asRecord(request.body);
+      requireConfirm(body.confirm, "presets deactivate");
+      preset = optionalString(body.preset, "preset");
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+      return;
+    }
+    if (!preset) {
+      const current = await runCli(ctx.config, ["presets", "current"], {
+        write: false,
+        timeoutMs: 120000,
+      });
+      await ctx.operations.recordCommand(current, false);
+      if (!current.ok) {
+        sendCli(reply, current);
+        return;
+      }
+      if (
+        current.data &&
+        typeof current.data === "object" &&
+        !Array.isArray(current.data) &&
+        typeof (current.data as Record<string, unknown>).id === "string"
+      ) {
+        preset = (current.data as Record<string, unknown>).id as string;
+      } else if (
+        current.data &&
+        typeof current.data === "object" &&
+        !Array.isArray(current.data) &&
+        typeof (current.data as Record<string, unknown>).name === "string"
+      ) {
+        preset = (current.data as Record<string, unknown>).name as string;
+      } else {
+        reply.code(400).send({ ok: false, error: "no active preset to deactivate" });
+        return;
+      }
+    }
+    enqueueJob(request, reply, ctx, "presets.deactivate", { preset }, [
+      "presets",
+      "deactivate",
+      preset,
+    ]);
+  });
+  // Legacy path kept for compatibility: deactivate a specific preset by path ref.
   app.post<{ Params: { ref: string } }>("/api/presets/:ref/deactivate", (request, reply) => {
-    requireConfirm(asRecord(request.body).confirm, "presets deactivate");
-    const ref = refParam(request.params.ref);
-    enqueueJob(request, reply, ctx, "presets.deactivate", { ref }, ["presets", "deactivate", ref]);
+    try {
+      requireConfirm(asRecord(request.body).confirm, "presets deactivate");
+      const ref = refParam(request.params.ref);
+      enqueueJob(request, reply, ctx, "presets.deactivate", { ref }, [
+        "presets",
+        "deactivate",
+        ref,
+      ]);
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+    }
   });
   app.post<{ Params: { ref: string } }>("/api/presets/:ref/skills", (request, reply) => {
     const preset = refParam(request.params.ref);
@@ -674,6 +999,49 @@ export async function registerRoutes(app: FastifyInstance, config: ServerConfig)
       preset,
       ...skills,
     ], true);
+  });
+  app.get<{ Params: { ref: string } }>("/api/presets/:ref/mcp", (request, reply) =>
+    directCli(request, reply, ctx, ["presets", "list-mcp", refParam(request.params.ref)]),
+  );
+  app.post<{ Params: { ref: string } }>("/api/presets/:ref/mcp", (request, reply) => {
+    try {
+      const preset = refParam(request.params.ref);
+      const servers = stringArray(
+        asRecord(request.body).servers ?? asRecord(request.body).mcp,
+        "servers",
+      );
+      enqueueJob(request, reply, ctx, "presets.addMcp", { preset, servers }, [
+        "presets",
+        "add-mcp",
+        preset,
+        ...servers,
+      ]);
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+    }
+  });
+  app.delete<{ Params: { ref: string } }>("/api/presets/:ref/mcp", (request, reply) => {
+    try {
+      const preset = refParam(request.params.ref);
+      const servers = stringArray(
+        asRecord(request.body).servers ?? asRecord(request.body).mcp,
+        "servers",
+      );
+      enqueueJob(request, reply, ctx, "presets.removeMcp", { preset, servers }, [
+        "presets",
+        "remove-mcp",
+        preset,
+        ...servers,
+      ]);
+    } catch (error) {
+      reply.code(400).send({
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid request",
+      });
+    }
   });
 
   app.get<{ Params: { agent: string } }>("/api/workspaces/global/:agent/skills", async (request, reply) => {

@@ -4,7 +4,7 @@
   },
   "sidebar": {
     "dashboard": "Dashboard",
-    "mySkills": "Library",
+    "mySkills": "Skills / MCP",
     "globalWorkspace": "Global Workspace",
     "lobsterAgents": "Lobster Agents",
     "installSkills": "Install Skills",
@@ -12,7 +12,8 @@
     "newPreset": "New Preset",
     "projects": "Project Workspaces",
     "addProject": "Link Project",
-    "settings": "Settings"
+    "settings": "Settings",
+    "mcpLibrary": "Install MCP"
   },
   "help": {
     "eyebrow": "Guide",
@@ -69,7 +70,7 @@
   },
   "dashboard": {
     "greeting": "Hello!",
-    "summary": "{{skills}} Skills in Library · {{agents}} Agents connected · {{projects}} Projects",
+    "summary": "{{skills}} skills and {{mcp}} MCP servers in the library · {{agents}} agents · {{projects}} projects",
     "librarySkills": "Library Skills",
     "syncCoverage": "Sync Coverage",
     "connectedAgents": "Connected Agents",
@@ -77,10 +78,16 @@
     "notSynced": "Not synced",
     "scanImport": "Scan & Import Local Skills",
     "installNew": "Install New Skills",
-    "recentActivity": "Recent Activity"
+    "recentActivity": "Recent Activity",
+    "libraryMcp": "MCP library",
+    "mcpCapableAgents": "MCP-capable agents",
+    "installMcp": "Install MCP",
+    "recentMcp": "Recent MCP",
+    "mcpInPresets": "In {{count}} presets",
+    "mcpNoPresets": "Not in any preset"
   },
   "mySkills": {
-    "title": "Library",
+    "title": "Skills / MCP",
     "applyToDefault": "Apply Preset",
     "applied": "Applied",
     "notAppliedYet": "Not applied yet",
@@ -282,6 +289,22 @@
       "addButton": "Add",
       "clickToRemove": "Click to mark for removal",
       "undoRemove": "Click to keep this tag"
+    },
+    "tabs": {
+      "skills": "Skills {{count}}",
+      "mcp": "MCP {{count}}"
+    },
+    "mcp": {
+      "selectServer": "Select an MCP server to add…",
+      "add": "Add",
+      "remove": "Remove",
+      "added": "Added {{name}}",
+      "removed": "Removed {{name}}",
+      "empty": "No MCP servers in this preset",
+      "emptyHint": "Add servers from the MCP library.",
+      "noCommand": "No command",
+      "emptyReadOnlyHint": "The active preset has no MCP servers. Manage them in the global workspace or MCP library.",
+      "edit": "Edit"
     }
   },
   "install": {
@@ -592,7 +615,19 @@
     "trayIconDesc": "Show an icon in the system tray for quick Show and Quit actions.",
     "trayIcon_on": "Show",
     "trayIcon_off": "Hide",
-    "trayIconOffHint": "Tray icon is hidden, so closing the window will quit the app."
+    "trayIconOffHint": "Tray icon is hidden, so closing the window will quit the app.",
+    "mcpOutputDir": "MCP output directory",
+    "mcpOutputDirPlaceholder": "MCP profile output directory",
+    "mcpOutputDirEmpty": "MCP output directory not set",
+    "mcpOutputFormat": "MCP output format",
+    "mcpPathSaved": "MCP output directory saved",
+    "mcpFormatSaved": "MCP output format saved",
+    "mcpSupport": "Support MCP",
+    "mcpSupportOn": "Profile MCP sync is on",
+    "mcpSupportOff": "Profile MCP sync is off",
+    "mcpSupportEnabled": "MCP support enabled for this agent",
+    "mcpSupportDisabled": "MCP support disabled for this agent",
+    "mcpFilename": "Filename"
   },
   "closeAction": {
     "title": "Close behavior",
@@ -809,7 +844,11 @@
     "skillDirectoryNotFound": "Skill directory not found",
     "batchEditTags": "Tags ({{count}})",
     "batchTagsUpdated": "Tags updated for {{count}} center skills",
-    "batchTagsFailed": "{{count}} center skills failed to update tags"
+    "batchTagsFailed": "{{count}} center skills failed to update tags",
+    "tabs": {
+      "skills": "Skills {{count}}",
+      "mcp": "MCP {{count}}"
+    }
   },
   "presetActions": {
     "button": "Apply Preset",
@@ -842,7 +881,10 @@
     "statusPartial": "{{installed}} / {{total}}",
     "statusInactive": "Not added",
     "activate": "Activate",
-    "deactivate": "Deactivate"
+    "deactivate": "Deactivate",
+    "appliedToast": "Applied preset \"{{name}}\" (skills + MCP)",
+    "deactivatedToast": "Deactivated preset \"{{name}}\" (skills + MCP cleared)",
+    "mcpGlobalNotice": "MCP config applies globally, not limited to this project"
   },
   "presetBar": {
     "shiftClickHint": "{{name}} · Shift+click to toggle",
@@ -906,6 +948,54 @@
         "centerNewer": "Center changed",
         "diverged": "Conflict"
       }
+    },
+    "tabs": {
+      "skills": "Skills {{count}}",
+      "mcp": "MCP {{count}}"
+    },
+    "mcp": {
+      "server": "MCP server",
+      "installed": "MCP installed into the library",
+      "installedAndJoined": "Installed {{name}} and added to preset \"{{preset}}\"",
+      "profile": {
+        "title": "MCP profile status",
+        "subtitle": "Tool: {{tool}} (profiles are written to the tool global config dir)",
+        "activePreset": "Active preset",
+        "status": "Status",
+        "path": "Output path",
+        "pathPending": "Path not resolved yet (click refresh)",
+        "pathNA": "N/A",
+        "none": "None",
+        "noActivePreset": "No active preset",
+        "unsupported": "This tool does not support profile MCP",
+        "unknown": "Unknown",
+        "written": "Profile file written",
+        "skipped": "Skipped ({{reason}})",
+        "launch": "Launch args",
+        "launchGeneric": "profile arg: {{arg}}",
+        "namingHint": "Filename equals the preset name: applying \"{{example}}\" writes {{example}}.config.toml, not Default.config.toml. On deactivate the file is kept with an empty [mcp_servers] section.",
+        "unsupportedHint": "Only tools with profile MCP support (e.g. Codex) receive config files in this phase; others are skipped on apply. Manage servers in the MCP library.",
+        "writtenEmpty": "Written (empty [mcp_servers] section — no MCP members)",
+        "subtitleReadonly": "MCP config is global — this project page is view-only (no install or membership edits)",
+        "projectReadonlyHint": "Install and membership changes are available in the global workspace or",
+        "toolFallback": "profile-capable tool",
+        "supportedBadge": "MCP supported",
+        "unsupportedBadge": "MCP not supported",
+        "unsupportedHideHint": "This agent does not have profile MCP enabled. Turn on “Support MCP” in Settings, or switch to a supported tool such as Codex.",
+        "managedFileHint": "Whole-file managed: switching presets overwrites {{file}} entirely (not a codex-style profile overlay). Restart the session to pick up changes."
+      },
+      "install": {
+        "title": "Install into MCP library",
+        "button": "Install MCP",
+        "joinActive": "Also add to active preset \"{{name}}\" and sync profile",
+        "joinDisabled": "No active preset — install goes to the library only (apply a preset first)"
+      },
+      "members": {
+        "title": "MCP members of preset \"{{name}}\"",
+        "titleNoPreset": "MCP members",
+        "noActiveTitle": "Apply a preset first",
+        "noActiveHint": "MCP membership is attached to the active preset. Use the Preset bar above, then add or remove servers here."
+      }
     }
   },
   "web": {
@@ -965,7 +1055,8 @@
       "tools": "Tools",
       "git": "Git Backup",
       "operations": "Operations",
-      "settings": "Settings"
+      "settings": "Settings",
+      "mcp": "MCP"
     },
     "shell": {
       "title": "Skills Manager Web",
@@ -1104,7 +1195,19 @@
       "removeSkill": "Remove skill",
       "skillRemoveQueued": "Skill remove job queued",
       "noPresetSelected": "No preset selected",
-      "noPresetSelectedDescription": "Select a preset to inspect and operate on it."
+      "noPresetSelectedDescription": "Select a preset to inspect and operate on it.",
+      "tabs": {
+        "skills": "Skills {{count}}",
+        "mcp": "MCP {{count}}"
+      },
+      "mcpMembership": "MCP membership",
+      "mcpSelectPlaceholder": "Select MCP server…",
+      "mcpAddQueued": "MCP added to preset",
+      "mcpRemoveQueued": "MCP removed from preset",
+      "presetMcp": "Preset MCP servers",
+      "noPresetMcp": "No MCP servers in this preset.",
+      "noCommand": "No command",
+      "removeMcp": "Remove MCP"
     },
     "git": {
       "title": "Git Backup",
@@ -1147,7 +1250,13 @@
       "title": "Tools",
       "description": "Read-only view of CLI-reported agent installation and enablement state.",
       "noTools": "No tools found",
-      "noToolsDescription": "The CLI did not return any agent/tool records."
+      "noToolsDescription": "The CLI did not return any agent/tool records.",
+      "mcpOutputDir": "MCP output directory",
+      "mcpOutputDirPlaceholder": "MCP profile output directory",
+      "mcpOutputFormat": "MCP output format",
+      "mcpSaved": "MCP settings saved",
+      "saveMcp": "Save MCP settings",
+      "jsonHiddenHint": "This tool does not support JSON format."
     },
     "operations": {
       "title": "Operations",
@@ -1158,6 +1267,58 @@
       "commands": "Commands",
       "noCommands": "No commands",
       "noCommandsDescription": "CLI invocations will appear after API requests run."
+    },
+    "mcp": {
+      "title": "MCP Library",
+      "description": "Manage the central MCP server library: install, view, edit, delete.",
+      "install": "Install",
+      "installTitle": "Install from raw TOML",
+      "installHint": "Paste TOML with [mcp_servers.<name>]; the server name is parsed from the section.",
+      "installQueued": "MCP install queued",
+      "edit": "Edit",
+      "editTitle": "Edit TOML",
+      "editHint": "Update content in place; the server name stays the same.",
+      "editQueued": "MCP edit queued",
+      "save": "Save",
+      "delete": "Delete",
+      "deleteTitle": "Delete MCP server",
+      "deleteMessage": "Delete \"{{name}}\"?",
+      "deleteQueued": "MCP delete queued",
+      "noServers": "No MCP servers",
+      "noServersDescription": "Paste raw TOML to install the first server.",
+      "noServerSelected": "No server selected",
+      "noServerSelectedDescription": "Select an MCP server from the list.",
+      "presetMembership": "In {{count}} presets",
+      "noPresets": "Not in any preset",
+      "command": "Command",
+      "content": "Full TOML"
     }
+  },
+  "mcpLibrary": {
+    "title": "Install MCP",
+    "install": "Install MCP",
+    "installTitle": "Install from raw TOML",
+    "installHint": "Paste TOML with [mcp_servers.<name>]; the server name is parsed from the section.",
+    "installed": "MCP server installed",
+    "updated": "MCP server updated",
+    "deleted": "MCP server deleted",
+    "empty": "No MCP servers yet",
+    "emptyHint": "Click Install MCP and paste TOML content.",
+    "presetCount": "In {{count}} presets",
+    "noPresets": "Not in any preset",
+    "edit": "Edit",
+    "delete": "Delete",
+    "deleteTitle": "Delete MCP server",
+    "deleteMessage": "Delete MCP server \"{{name}}\"? It will also be removed from all presets.",
+    "command": "Command",
+    "presets": "Presets",
+    "editHint": "Update TOML in place; the server name stays the same.",
+    "save": "Save",
+    "content": "Full TOML",
+    "selectPrompt": "Select an MCP server",
+    "selectHint": "Pick one from the list or install a new one.",
+    "description": "Description",
+    "optional": "(optional)",
+    "descriptionPlaceholder": "Short blurb for the list, e.g. “Weather lookup”"
   }
 }

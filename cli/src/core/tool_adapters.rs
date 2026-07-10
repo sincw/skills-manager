@@ -44,6 +44,27 @@ pub struct ToolAdapter {
     /// UI grouping. See [`ToolCategory`].
     #[serde(default)]
     pub category: ToolCategory,
+    /// Whether this tool can load a profile-style MCP config overlay (e.g. codex `--profile`).
+    #[serde(default)]
+    pub supports_mcp_profile: bool,
+    /// Formats this tool can consume for MCP profile files (e.g. `["toml"]` for codex).
+    #[serde(default)]
+    pub supported_mcp_formats: Vec<String>,
+    /// Optional relative MCP output dir under home. When unset, defaults to the
+    /// parent of `relative_skills_dir` (e.g. `.codex/skills` → `.codex`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative_mcp_output_dir: Option<String>,
+    /// Absolute override for the MCP output directory (settings-page override).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_mcp_output_dir: Option<String>,
+    /// Preferred MCP output format for this tool. Defaults to `"toml"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_output_format: Option<String>,
+    /// When set, MCP sync writes this exact filename under `mcp_output_dir`
+    /// instead of `{preset}.config.{ext}`. Used by tools that load a single
+    /// fixed file (e.g. Pi → `mcp.json`). Whole-file replace on every sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_output_filename: Option<String>,
 }
 
 /// Serializable custom tool definition stored in settings.
@@ -56,6 +77,18 @@ pub struct CustomToolDef {
     pub project_relative_skills_dir: Option<String>,
     #[serde(default)]
     pub category: ToolCategory,
+    #[serde(default)]
+    pub supports_mcp_profile: bool,
+    #[serde(default)]
+    pub supported_mcp_formats: Vec<String>,
+    #[serde(default)]
+    pub relative_mcp_output_dir: Option<String>,
+    #[serde(default)]
+    pub override_mcp_output_dir: Option<String>,
+    #[serde(default)]
+    pub mcp_output_format: Option<String>,
+    #[serde(default)]
+    pub mcp_output_filename: Option<String>,
 }
 
 impl ToolAdapter {
@@ -142,6 +175,43 @@ impl ToolAdapter {
     pub fn has_path_override(&self) -> bool {
         self.override_skills_dir.is_some()
     }
+
+    /// Resolved MCP output directory:
+    /// `override_mcp_output_dir` → `relative_mcp_output_dir` → parent of `relative_skills_dir`.
+    pub fn mcp_output_dir(&self) -> Option<PathBuf> {
+        if let Some(ref abs) = self.override_mcp_output_dir {
+            let trimmed = abs.trim();
+            if !trimmed.is_empty() {
+                return Some(PathBuf::from(trimmed));
+            }
+        }
+        if let Some(ref rel) = self.relative_mcp_output_dir {
+            let trimmed = rel.trim();
+            if !trimmed.is_empty() {
+                let candidates = Self::candidate_paths(trimmed);
+                return Some(Self::select_existing_or_default(&candidates));
+            }
+        }
+        let rel = self.relative_skills_dir.trim();
+        if rel.is_empty() {
+            return None;
+        }
+        let parent = PathBuf::from(rel)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .filter(|p| !p.as_os_str().is_empty())?;
+        let candidates = Self::candidate_paths(&parent.to_string_lossy());
+        Some(Self::select_existing_or_default(&candidates))
+    }
+
+    /// Effective MCP output format (`toml` by default).
+    pub fn resolved_mcp_output_format(&self) -> &str {
+        self.mcp_output_format
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("toml")
+    }
 }
 
 pub fn default_tool_adapters() -> Vec<ToolAdapter> {
@@ -157,6 +227,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "claude_code".into(),
@@ -169,6 +245,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             // Codex CLI reads user-level skills from `~/.codex/skills/` and
@@ -192,6 +274,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: true,
+            supported_mcp_formats: vec!["toml".into()],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             // Grok reads user-level skills from `~/.grok/skills/` and
@@ -207,6 +295,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "opencode".into(),
@@ -219,6 +313,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: Some(".opencode/skills".into()),
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "antigravity".into(),
@@ -231,6 +331,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "amp".into(),
@@ -243,6 +349,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "kilo_code".into(),
@@ -255,6 +367,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "roo_code".into(),
@@ -267,6 +385,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "goose".into(),
@@ -279,6 +403,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "gemini_cli".into(),
@@ -291,6 +421,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "github_copilot".into(),
@@ -304,6 +440,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "openclaw".into(),
@@ -316,6 +458,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "droid".into(),
@@ -328,6 +476,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "windsurf".into(),
@@ -340,6 +494,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "trae".into(),
@@ -352,6 +512,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "cline".into(),
@@ -364,6 +530,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "deepagents".into(),
@@ -376,6 +548,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "firebender".into(),
@@ -388,6 +566,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "kimi".into(),
@@ -400,6 +584,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "replit".into(),
@@ -412,6 +602,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "warp".into(),
@@ -424,6 +620,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "augment".into(),
@@ -436,6 +638,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "bob".into(),
@@ -448,6 +656,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "codebuddy".into(),
@@ -460,6 +674,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "command_code".into(),
@@ -472,6 +692,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "continue".into(),
@@ -484,6 +710,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "cortex".into(),
@@ -496,6 +728,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "crush".into(),
@@ -508,6 +746,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "iflow".into(),
@@ -520,6 +764,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "junie".into(),
@@ -532,6 +782,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "kiro".into(),
@@ -544,6 +800,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "kode".into(),
@@ -556,6 +818,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "mcpjam".into(),
@@ -568,6 +836,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "mistral_vibe".into(),
@@ -580,6 +854,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "mux".into(),
@@ -592,6 +872,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "neovate".into(),
@@ -604,6 +890,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "openhands".into(),
@@ -616,6 +908,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "pi".into(),
@@ -628,6 +926,14 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            // Pi loads a single fixed JSON file (~/.pi/agent/mcp.json), not
+            // per-preset profile overlays. Sync whole-file replaces that path.
+            supports_mcp_profile: true,
+            supported_mcp_formats: vec!["json".into()],
+            relative_mcp_output_dir: Some(".pi/agent".into()),
+            override_mcp_output_dir: None,
+            mcp_output_format: Some("json".into()),
+            mcp_output_filename: Some("mcp.json".into()),
         },
         ToolAdapter {
             key: "pochi".into(),
@@ -640,6 +946,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "qoder".into(),
@@ -652,6 +964,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "qwen_code".into(),
@@ -664,6 +982,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "trae_cn".into(),
@@ -676,6 +1000,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "zencoder".into(),
@@ -688,6 +1018,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "adal".into(),
@@ -700,6 +1036,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "hermes".into(),
@@ -712,6 +1054,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: true,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "qclaw".into(),
@@ -724,6 +1072,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "easyclaw".into(),
@@ -736,6 +1090,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "autoclaw".into(),
@@ -748,6 +1108,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
         ToolAdapter {
             key: "workbuddy".into(),
@@ -760,6 +1126,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             is_custom: false,
             recursive_scan: false,
             project_relative_skills_dir: None,
+            supports_mcp_profile: false,
+            supported_mcp_formats: vec![],
+            relative_mcp_output_dir: None,
+            override_mcp_output_dir: None,
+            mcp_output_format: None,
+            mcp_output_filename: None,
         },
     ]
 }
@@ -798,10 +1170,75 @@ pub fn custom_tools(store: &crate::core::skill_store::SkillStore) -> Vec<CustomT
         .unwrap_or_default()
 }
 
+/// Read per-tool absolute MCP output dir overrides (mirrors `custom_tool_paths`).
+pub fn custom_tool_mcp_paths(
+    store: &crate::core::skill_store::SkillStore,
+) -> HashMap<String, String> {
+    store
+        .get_setting("custom_tool_mcp_paths")
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
+/// Read per-tool MCP output format overrides (`toml` | `json`).
+pub fn custom_tool_mcp_formats(
+    store: &crate::core::skill_store::SkillStore,
+) -> HashMap<String, String> {
+    store
+        .get_setting("custom_tool_mcp_formats")
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
+/// Read per-tool MCP output filename overrides.
+/// Empty-string value → `None` (use preset-based `{preset}.config.{ext}`).
+pub fn custom_tool_mcp_filenames(
+    store: &crate::core::skill_store::SkillStore,
+) -> HashMap<String, String> {
+    store
+        .get_setting("custom_tool_mcp_filenames")
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
+/// Per-tool override for whether profile MCP sync is enabled in the UI/sync path.
+/// Missing key → use the adapter's built-in default (`supports_mcp_profile`).
+pub fn custom_tool_mcp_profile_support(
+    store: &crate::core::skill_store::SkillStore,
+) -> HashMap<String, bool> {
+    store
+        .get_setting("custom_tool_mcp_profile_support")
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
+fn apply_mcp_profile_support_override(adapter: &mut ToolAdapter, enabled: bool) {
+    adapter.supports_mcp_profile = enabled;
+    if enabled && adapter.supported_mcp_formats.is_empty() {
+        // User opted into profile MCP; default to TOML (codex-compatible).
+        adapter.supported_mcp_formats = vec!["toml".into()];
+    }
+    if !enabled {
+        // Keep formats list for settings UI, but sync will skip via supports flag.
+    }
+}
+
 /// Returns all tool adapters: built-in (with path overrides applied) + custom tools.
 pub fn all_tool_adapters(store: &crate::core::skill_store::SkillStore) -> Vec<ToolAdapter> {
     let overrides = custom_tool_paths(store);
     let project_overrides = custom_tool_project_paths(store);
+    let mcp_path_overrides = custom_tool_mcp_paths(store);
+    let mcp_format_overrides = custom_tool_mcp_formats(store);
+    let mcp_profile_support = custom_tool_mcp_profile_support(store);
+    let mcp_filename_overrides = custom_tool_mcp_filenames(store);
     let customs = custom_tools(store);
 
     let mut adapters: Vec<ToolAdapter> = default_tool_adapters()
@@ -813,13 +1250,27 @@ pub fn all_tool_adapters(store: &crate::core::skill_store::SkillStore) -> Vec<To
             if let Some(project_path) = project_overrides.get(&a.key) {
                 a.project_relative_skills_dir = Some(project_path.clone());
             }
+            if let Some(mcp_path) = mcp_path_overrides.get(&a.key) {
+                a.override_mcp_output_dir = Some(mcp_path.clone());
+            }
+            if let Some(fmt) = mcp_format_overrides.get(&a.key) {
+                a.mcp_output_format = Some(fmt.clone());
+            }
+            if let Some(enabled) = mcp_profile_support.get(&a.key) {
+                apply_mcp_profile_support_override(&mut a, *enabled);
+            }
+            match mcp_filename_overrides.get(&a.key) {
+                Some(s) if s.is_empty() => a.mcp_output_filename = None,
+                Some(s) => a.mcp_output_filename = Some(s.clone()),
+                None => { /* keep adapter default */ }
+            }
             a
         })
         .collect();
 
     for ct in customs {
-        adapters.push(ToolAdapter {
-            key: ct.key,
+        let mut adapter = ToolAdapter {
+            key: ct.key.clone(),
             display_name: ct.display_name,
             relative_skills_dir: ct.project_relative_skills_dir.unwrap_or_default(),
             relative_detect_dir: String::new(),
@@ -829,7 +1280,29 @@ pub fn all_tool_adapters(store: &crate::core::skill_store::SkillStore) -> Vec<To
             is_custom: true,
             recursive_scan: false,
             project_relative_skills_dir: None,
-        });
+            supports_mcp_profile: ct.supports_mcp_profile,
+            supported_mcp_formats: ct.supported_mcp_formats,
+            relative_mcp_output_dir: ct.relative_mcp_output_dir,
+            override_mcp_output_dir: ct.override_mcp_output_dir,
+            mcp_output_format: ct.mcp_output_format,
+            mcp_output_filename: ct.mcp_output_filename,
+        };
+        // Global settings overrides still win for custom tools when present.
+        if let Some(mcp_path) = mcp_path_overrides.get(&ct.key) {
+            adapter.override_mcp_output_dir = Some(mcp_path.clone());
+        }
+        if let Some(fmt) = mcp_format_overrides.get(&ct.key) {
+            adapter.mcp_output_format = Some(fmt.clone());
+        }
+        if let Some(enabled) = mcp_profile_support.get(&ct.key) {
+            apply_mcp_profile_support_override(&mut adapter, *enabled);
+        }
+        match mcp_filename_overrides.get(&ct.key) {
+            Some(s) if s.is_empty() => adapter.mcp_output_filename = None,
+            Some(s) => adapter.mcp_output_filename = Some(s.clone()),
+            None => {}
+        }
+        adapters.push(adapter);
     }
 
     adapters
@@ -840,6 +1313,9 @@ pub fn find_adapter_with_store(
     store: &crate::core::skill_store::SkillStore,
     key: &str,
 ) -> Option<ToolAdapter> {
+    let mcp_path_overrides = custom_tool_mcp_paths(store);
+    let mcp_format_overrides = custom_tool_mcp_formats(store);
+
     if let Some(mut adapter) = default_tool_adapters().into_iter().find(|a| a.key == key) {
         if let Some(path) = custom_tool_paths(store).get(key) {
             adapter.override_skills_dir = Some(path.clone());
@@ -847,23 +1323,44 @@ pub fn find_adapter_with_store(
         if let Some(project_path) = custom_tool_project_paths(store).get(key) {
             adapter.project_relative_skills_dir = Some(project_path.clone());
         }
+        if let Some(mcp_path) = mcp_path_overrides.get(key) {
+            adapter.override_mcp_output_dir = Some(mcp_path.clone());
+        }
+        if let Some(fmt) = mcp_format_overrides.get(key) {
+            adapter.mcp_output_format = Some(fmt.clone());
+        }
         return Some(adapter);
     }
 
     custom_tools(store)
         .into_iter()
         .find(|ct| ct.key == key)
-        .map(|ct| ToolAdapter {
-            key: ct.key,
-            display_name: ct.display_name,
-            relative_skills_dir: ct.project_relative_skills_dir.unwrap_or_default(),
-            relative_detect_dir: String::new(),
-            additional_scan_dirs: vec![],
-            override_skills_dir: Some(ct.skills_dir),
-            category: ct.category,
-            is_custom: true,
-            recursive_scan: false,
-            project_relative_skills_dir: None,
+        .map(|ct| {
+            let mut adapter = ToolAdapter {
+                key: ct.key.clone(),
+                display_name: ct.display_name,
+                relative_skills_dir: ct.project_relative_skills_dir.unwrap_or_default(),
+                relative_detect_dir: String::new(),
+                additional_scan_dirs: vec![],
+                override_skills_dir: Some(ct.skills_dir),
+                category: ct.category,
+                is_custom: true,
+                recursive_scan: false,
+                project_relative_skills_dir: None,
+                supports_mcp_profile: ct.supports_mcp_profile,
+                supported_mcp_formats: ct.supported_mcp_formats,
+                relative_mcp_output_dir: ct.relative_mcp_output_dir,
+                override_mcp_output_dir: ct.override_mcp_output_dir,
+                mcp_output_format: ct.mcp_output_format,
+                mcp_output_filename: ct.mcp_output_filename,
+            };
+            if let Some(mcp_path) = mcp_path_overrides.get(key) {
+                adapter.override_mcp_output_dir = Some(mcp_path.clone());
+            }
+            if let Some(fmt) = mcp_format_overrides.get(key) {
+                adapter.mcp_output_format = Some(fmt.clone());
+            }
+            adapter
         })
 }
 
@@ -919,4 +1416,30 @@ mod tests {
         // Project path under workspace: .opencode/skills
         assert_eq!(adapter.project_relative_skills_dir(), ".opencode/skills");
     }
+
+    #[test]
+    fn codex_supports_toml_mcp_profiles() {
+        let adapter = default_tool_adapters()
+            .into_iter()
+            .find(|adapter| adapter.key == "codex")
+            .expect("codex adapter should exist");
+
+        assert!(adapter.supports_mcp_profile);
+        assert_eq!(adapter.supported_mcp_formats, vec!["toml".to_string()]);
+        assert_eq!(adapter.resolved_mcp_output_format(), "toml");
+        // Default MCP dir is parent of .codex/skills → ~/.codex
+        let dir = adapter.mcp_output_dir().expect("mcp output dir");
+        assert!(dir.ends_with(".codex"), "unexpected mcp dir: {}", dir.display());
+    }
+
+    #[test]
+    fn cursor_does_not_support_profile_mcp_by_default() {
+        let adapter = default_tool_adapters()
+            .into_iter()
+            .find(|adapter| adapter.key == "cursor")
+            .expect("cursor adapter should exist");
+        assert!(!adapter.supports_mcp_profile);
+        assert!(adapter.supported_mcp_formats.is_empty());
+    }
+
 }
